@@ -538,8 +538,13 @@ fn write_hal(hal: &dyn Hal, out: &StateChange, sensor_applied: &StateChange) {
 /// Phase 6b — fan the same change out to every bridge endpoint. Each buffers
 /// onto its own transport; none blocks the step.
 fn write_bridges(bridges: &mut [Box<dyn Bridge>], asked: &[bool], out: &StateChange) {
+    let speech_changed = out
+        .set
+        .keys()
+        .any(|key| key.path == "standard/ros4hri/speech/text");
+
     for (endpoint, bridge) in bridges.iter_mut().enumerate() {
-        if asked.get(endpoint).copied().unwrap_or(false) {
+        if speech_changed || asked.get(endpoint).copied().unwrap_or(false) {
             bridge.try_send(out);
         }
     }

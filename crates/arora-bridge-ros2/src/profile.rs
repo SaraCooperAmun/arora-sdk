@@ -211,15 +211,9 @@ impl ExposureProfile {
                     &look_at_routes,
                 ),
                 endpoint(
-                    "/robot_face/tts",
+                    "/robot_face/speech",
                     "std_msgs/String",
-                    Flow::In,
-                    &speech_routes,
-                ),
-                endpoint(
-                    "/expressive_face/speech",
-                    "std_msgs/String",
-                    Flow::In,
+                    Flow::Out,
                     &speech_routes,
                 ),
                 endpoint(
@@ -392,8 +386,7 @@ mod tests {
             "/robot_face/expression",
             "/robot_face/look_at",
             "/expressive_face/look_at",
-            "/robot_face/tts",
-            "/expressive_face/speech",
+            "/robot_face/speech",
             "/robot_face/image_raw",
             "/robot_face/image_raw/compressed",
         ] {
@@ -401,7 +394,9 @@ mod tests {
         }
         // The commands flow in and the image flows out; nothing else does.
         for endpoint in &profile.endpoints {
-            let expected = if endpoint.topic.starts_with("/robot_face/image_raw") {
+            let expected = if endpoint.topic.starts_with("/robot_face/image_raw")
+                || endpoint.topic == "/robot_face/speech"
+            {
                 Flow::Out
             } else {
                 Flow::In

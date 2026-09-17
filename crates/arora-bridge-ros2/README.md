@@ -22,9 +22,11 @@ Keys map to topics under a namespace: the key `face/mouth` is the topic
 | ROS → Runtime | `commands()` | Each message received on a declared input topic becomes a `BridgeOp::Update` the runtime applies to its store. |
 
 Input keys must be declared in the config (path + value type): a ROS 2 topic is
-typed, and the subscription is created before any message arrives. Output keys
-need no declaration — a publisher is created from each changed value's type on
-first use.
+typed, and the subscription is created before any message arrives. Input keys must be declared in the config (path + value type): a ROS 2 topic is
+typed, and the subscription is created before any message arrives. Generic
+output keys need no declaration — a publisher is created from each changed
+value's type on first use. Typed outputs and exposure profiles declare their ROS
+2 message type and topic explicitly.
 
 ## Delivery: only the latest value, twice over
 
@@ -161,7 +163,10 @@ skills spawn the device's task runs — `interaction_skills/LookAt` on
 a face, the viseme at the audio playhead). The rendered face publishes on the
 `image_transport` pair PAL OS documents — `display/face` as a
 `sensor_msgs/Image` on `/robot_face/image_raw`, `display/face/compressed` as a
-`sensor_msgs/CompressedImage` on `/robot_face/image_raw/compressed`; a face
+`sensor_msgs/CompressedImage` on `/robot_face/image_raw/compressed`. The face
+also publishes the synthesized speech text as `std_msgs/String` on
+`/robot_face/speech`, sourced from the
+`standard/ros4hri/speech/text` key after successful speech synthesis. A face
 writes the key of the transport it encodes. Enabling it is one call:
 
 ```rust

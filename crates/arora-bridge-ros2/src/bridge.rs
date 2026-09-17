@@ -89,6 +89,7 @@ pub struct TypedOutput {
     /// Delivery profile; `None` takes [`Qos::default_for`] an outbound flow
     /// (sensor data — an output topic carries state).
     pub qos: Option<Qos>,
+    pub raw: bool,
 }
 
 /// An input key subscribed as a **typed** ROS 2 message rather than a
@@ -209,10 +210,10 @@ impl Ros2BridgeConfig {
             ros_type: ros_type.into(),
             topic: None,
             qos: None,
+            raw: false,
         });
         self
     }
-
     /// Publish an output key as a typed ROS message on an explicit `topic` name
     /// — an absolute ROS name (e.g. `/robot_face/expression`) escapes the
     /// `/{namespace}/keys/…` convention, as a ROS4HRI binding needs.
@@ -227,6 +228,7 @@ impl Ros2BridgeConfig {
             ros_type: ros_type.into(),
             topic: Some(topic.into()),
             qos: None,
+            raw: false,
         });
         self
     }
@@ -255,9 +257,10 @@ impl Ros2BridgeConfig {
                     };
                     self.outputs.push(TypedOutput {
                         path: route.key.clone(),
-                        ros_type: endpoint.ros_type,
+                        ros_type: endpoint.ros_type.clone(),
                         topic: Some(endpoint.topic),
                         qos: endpoint.qos,
+                        raw: endpoint.ros_type == "std_msgs/String",
                     });
                 }
             }
@@ -981,6 +984,47 @@ async fn publish_change(
         // A typed output rides its declared ROS message; its publisher is
         // created lazily like the untyped one.
         if let Some(binding) = typed_outputs.get(&key.path) {
+            if binding.raw {
+                if !publishers.contains_key(&key.path) {
+                    let topic = binding
+                        .topic
+                        .clone()
+                        .unwrap_or_else(|| topic_name(namespace, &key.path));
+
+                    if subscribed.contains(&topic) {
+                        warn!(
+                            "Ros2Bridge does not publish key '{}': its topic '{topic}' is one this bridge \
+                            subscribes to, and echoing it back would feed the device its own commands",
+                            key.path
+                        );
+                        echoed.insert(key.path.clone());
+                        continue;
+                    }
+
+                    let qos = binding
+                        .qos
+                        .unwrap_or(Qos::default_for(profile::Flow::Out));
+
+                    match KeyPublisher::create(node, &topic, value, qos) {
+                        Ok(publisher) => {
+                            publishers.insert(key.path.clone(), publisher);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Ros2Bridge could not create a publisher for key '{}': {e}",
+                                key.path
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                if let Some(publisher) = publishers.get(&key.path) {
+                    publisher.publish(value).await;
+                }
+
+                continue;
+            }
             if !typed_publishers.contains_key(&key.path) {
                 let topic = binding
                     .topic
@@ -1003,16 +1047,13 @@ async fn publish_change(
                     registry.clone(),
                     binding.qos.unwrap_or(Qos::default_for(profile::Flow::Out)),
                 ) {
-                    Ok(publisher) => {
-                        typed_publishers.insert(key.path.clone(), publisher);
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Ros2Bridge could not create a typed publisher for key '{}': {e}",
-                            key.path
-                        );
-                        continue;
-                    }
+                Ok(publisher) => {
+                    typed_publishers.insert(key.path.clone(), publisher);
+                }
+                Err(e) => {
+                    warn!("Ros2Bridge could not create a typed publisher for key '{}': {e}", key.path);
+                    continue;
+                }
                 }
             }
             if let Some(publisher) = typed_publishers.get(&key.path) {
