@@ -113,7 +113,7 @@ pub struct ExposureProfile {
 
 impl ExposureProfile {
     /// The ROS4HRI face surface, serving both incumbent name sets — PAL
-    /// (`/robot_face/*`) and IIIA (`/expressive_face/*`) — out of the box:
+    /// (`/robot_face/*`) and IIIA (`/robot_face/*`) — out of the box:
     ///
     /// - expression commands (`hri_msgs/Expression`) fan out to the
     ///   `standard/ros4hri/expression/*` keys the face standard reads;
@@ -200,12 +200,6 @@ impl ExposureProfile {
                 ),
                 endpoint(
                     "/robot_face/look_at",
-                    "geometry_msgs/PointStamped",
-                    Flow::In,
-                    &look_at_routes,
-                ),
-                endpoint(
-                    "/expressive_face/look_at",
                     "geometry_msgs/PointStamped",
                     Flow::In,
                     &look_at_routes,
@@ -391,7 +385,6 @@ mod tests {
         for expected in [
             "/skill/set_expression",
             "/robot_face/look_at",
-            "/expressive_face/look_at",
             "/robot_face/tts",
             "/expressive_face/speech",
             "/robot_face/image_raw",
