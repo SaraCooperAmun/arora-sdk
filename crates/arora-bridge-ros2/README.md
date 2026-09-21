@@ -156,8 +156,10 @@ standard ROS 2 action — the skill plane. `ExposureProfile::ros4hri()` ships
 the ROS4HRI face surface for both incumbent name sets — PAL (`/robot_face/*`)
 and IIIA (`/expressive_face/*`): expression commands fan out to
 `standard/ros4hri/expression/*`, `look_at` points land as the gaze target
-(vec3) and frame, speech text feeds the lipsync key, and the two standard
-skills spawn the device's task runs — `interaction_skills/LookAt` on
+(vec3) and frame, speech text feeds the lipsync key, and
+`/robot_face/viseme` accepts timed `hri_msgs/Viseme` messages for direct
+viseme streaming into the face. The two standard skills spawn the device's
+task runs — `interaction_skills/LookAt` on
 `/skill/look_at`, and `communication_skills/Say` on `/skill/say`, whose goal
 `input` is the utterance and whose feedback carries what the run reports (for
 a face, the viseme at the audio playhead). The rendered face publishes on the
@@ -189,3 +191,94 @@ being rejected — and answers with the standard Result message carrying the
 `ExposureProfile::coverage` reports which of the profile's keys and skill
 functions a device does not serve, so a deployment checks a face against its
 profile up front instead of discovering holes topic by topic.
+
+## ROS4HRI viseme streaming
+
+The face accepts streamed visemes on `/robot_face/viseme` using
+`hri_msgs/Viseme`. Each message identifies the viseme with `value` and
+provides its timing with `time` and `duration`.
+
+The bridge maps each ROS `hri_msgs/Viseme` value to the corresponding
+internal Vizij viseme key. Before activating the received viseme, the
+bridge resets the other viseme keys to `0.0`, allowing repeated viseme
+sequences to be streamed continuously.
+
+| Value | ROS viseme | Internal Vizij key          |
+| ----: | ---------- | --------------------------- |
+|   `0` | `SIL`      | `standard/vizij/viseme/sil` |
+|   `1` | `PP`       | `standard/vizij/viseme/PP`  |
+|   `2` | `FF`       | `standard/vizij/viseme/FF`  |
+|   `3` | `TH`       | `standard/vizij/viseme/TH`  |
+|   `4` | `DD`       | `standard/vizij/viseme/DD`  |
+|   `5` | `KK`       | `standard/vizij/viseme/kk`  |
+|   `6` | `CH`       | `standard/vizij/viseme/CH`  |
+|   `7` | `SS`       | `standard/vizij/viseme/SS`  |
+|   `8` | `NN`       | `standard/vizij/viseme/nn`  |
+|   `9` | `RR`       | `standard/vizij/viseme/RR`  |
+|  `10` | `AA`       | `standard/vizij/viseme/aa`  |
+|  `11` | `E`        | `standard/vizij/viseme/E`   |
+|  `12` | `IH`       | `standard/vizij/viseme/ih`  |
+|  `13` | `OH`       | `standard/vizij/viseme/oh`  |
+|  `14` | `OU`       | `standard/vizij/viseme/ou`  |
+
+### Testing
+
+Set the ROS 2 middleware:
+
+```bash
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+```
+
+Check the topic:
+
+```bash
+ros2 topic info /robot_face/viseme
+```
+
+The topic should use `hri_msgs/Viseme` and show the Vizij bridge as a
+subscriber.
+
+In another terminal, publish one viseme:
+
+```bash
+ros2 topic pub --once /robot_face/viseme hri_msgs/msg/Viseme \
+  "{value: 12, time: 0.0, duration: 0.1}"
+```
+
+For a complete sequence:
+
+```bash
+for v in 12 8 13 14 10 1 7 0; do
+  ros2 topic pub --once /robot_face/viseme hri_msgs/msg/Viseme \
+    "{value: $v, time: 0.0, duration: 0.1}"
+  sleep 0.15
+done
+```
+
+The sequence corresponds to:
+
+```text
+IH → NN → OH → OU → AA → PP → SS → SIL
+```
+
+and should produce the corresponding mouth movements. The sequence can be
+run repeatedly.
+
+To inspect the ROS messages:
+
+```bash
+ros2 topic echo /robot_face/viseme
+```
+
+A received message has the form:
+
+```yaml
+value: 12
+time: 0.0
+duration: 0.1
+```
+
+The bridge currently uses `value` to select the internal Vizij viseme key.
+The `time` and `duration` fields are preserved as part of the
+`hri_msgs/Viseme` interface for timed viseme streaming.
+

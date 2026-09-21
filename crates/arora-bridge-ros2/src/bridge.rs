@@ -1151,6 +1151,11 @@ mod tests {
                     "sensor_msgs/CompressedImage",
                     Some("/robot_face/image_raw/compressed")
                 ),
+                (
+                    "standard/ros4hri/speech/text",
+                    "std_msgs/String",
+                    Some("/robot_face/speech")
+                ),
             ]
         );
         assert!(
