@@ -234,6 +234,12 @@ impl ExposureProfile {
                     Flow::Out,
                     &whole("display/face/compressed"),
                 ),
+                endpoint(
+                    "/robot_face/viseme",
+                    "hri_msgs/Viseme",
+                    Flow::In,
+                    &[],
+                ),
             ],
             includes: Vec::new(),
             actions: vec![
@@ -392,6 +398,7 @@ mod tests {
             "/robot_face/expression",
             "/robot_face/look_at",
             "/expressive_face/look_at",
+            "/robot_face/viseme",
             "/robot_face/tts",
             "/expressive_face/speech",
             "/robot_face/image_raw",
@@ -438,6 +445,21 @@ mod tests {
     }
 
     #[test]
+    fn ros4hri_preset_subscribes_to_viseme_topic() {
+        let profile = ExposureProfile::ros4hri();
+
+        let viseme = profile
+            .endpoints
+            .iter()
+            .find(|e| e.topic == "/robot_face/viseme")
+            .expect("/robot_face/viseme is in the preset");
+
+        assert_eq!(viseme.ros_type, "hri_msgs/Viseme");
+        assert_eq!(viseme.flow, Flow::In);
+        assert!(viseme.routes.is_empty());
+    }
+
+    #[test]
     fn ros4hri_preset_binds_the_standard_skills() {
         let profile = ExposureProfile::ros4hri();
         let [look_at, say] = profile.actions.as_slice() else {
@@ -477,7 +499,7 @@ mod tests {
             .filter(|k| !k.ends_with("gaze/target"))
             .collect();
         let missing = profile.coverage(partial, ["look_at", "say"]);
-        assert_eq!(missing.len(), 2, "{missing:?}");
+        assert_eq!(missing.len(), 1, "{missing:?}");
         assert!(missing.iter().all(|m| m.contains("gaze/target")));
         // A device serving neither skill method misses the whole skill plane.
         let missing = profile.coverage(keys.iter().map(String::as_str), []);
