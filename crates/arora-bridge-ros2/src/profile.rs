@@ -167,6 +167,10 @@ impl ExposureProfile {
                 key: "standard/ros4hri/gaze/frame".into(),
             },
         ];
+        let viseme_routes = vec![FieldRoute {
+            field: "visemes".into(),
+            key: "standard/ros4hri/viseme".into(),
+        }];
         let speech_routes = vec![FieldRoute {
             field: "data".into(),
             key: "standard/ros4hri/speech/text".into(),
@@ -235,10 +239,10 @@ impl ExposureProfile {
                     &whole("display/face/compressed"),
                 ),
                 endpoint(
-                    "/robot_face/viseme",
-                    "hri_msgs/Viseme",
+                    "/tts/visemes",
+                    "hri_msgs/Visemes",
                     Flow::In,
-                    &[],
+                    &viseme_routes,
                 ),
             ],
             includes: Vec::new(),
@@ -391,6 +395,21 @@ mod tests {
     }
 
     #[test]
+    fn ros4hri_preset_subscribes_to_viseme_topic() {
+        let profile = ExposureProfile::ros4hri();
+
+        let viseme = profile
+            .endpoints
+            .iter()
+            .find(|e| e.topic == "/tts/visemes")
+            .expect("/tts/visemes is in the preset");
+
+        assert_eq!(viseme.ros_type, "hri_msgs/Visemes");
+        assert_eq!(viseme.flow, Flow::In);
+        assert_eq!(viseme.routes[0].field, "visemes");
+    }
+    
+    #[test]
     fn ros4hri_preset_serves_both_name_sets() {
         let profile = ExposureProfile::ros4hri();
         let topics: Vec<&str> = profile.endpoints.iter().map(|e| e.topic.as_str()).collect();
@@ -398,7 +417,7 @@ mod tests {
             "/robot_face/expression",
             "/robot_face/look_at",
             "/expressive_face/look_at",
-            "/robot_face/viseme",
+            "/tts/visemes",
             "/robot_face/tts",
             "/expressive_face/speech",
             "/robot_face/image_raw",
@@ -451,8 +470,8 @@ mod tests {
         let viseme = profile
             .endpoints
             .iter()
-            .find(|e| e.topic == "/robot_face/viseme")
-            .expect("/robot_face/viseme is in the preset");
+            .find(|e| e.topic == "/tts/visemes")
+            .expect("/tts/visemes is in the preset");
 
         assert_eq!(viseme.ros_type, "hri_msgs/Viseme");
         assert_eq!(viseme.flow, Flow::In);
