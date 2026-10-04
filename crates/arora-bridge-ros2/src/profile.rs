@@ -116,7 +116,7 @@ pub struct ExposureProfile {
 
 impl ExposureProfile {
     /// The ROS4HRI face surface, serving both incumbent name sets — PAL
-    /// (`/robot_face/*`) and IIIA (`/expressive_face/*`) — out of the box:
+    /// (`/robot_face/*`) and IIIA (`/robot_face/*`) — out of the box:
     ///
     /// - expression commands (`hri_msgs/Expression`) fan out to the
     ///   `standard/ros4hri/expression/*` keys the face standard reads;
@@ -161,15 +161,15 @@ impl ExposureProfile {
     pub fn ros4hri() -> Self {
         let expression_routes = vec![
             FieldRoute {
-                field: "expression".into(),
+                field: "expression.expression".into(),
                 key: "standard/ros4hri/expression/name".into(),
             },
             FieldRoute {
-                field: "valence".into(),
+                field: "expression.valence".into(),
                 key: "standard/ros4hri/expression/valence".into(),
             },
             FieldRoute {
-                field: "arousal".into(),
+                field: "expression.arousal".into(),
                 key: "standard/ros4hri/expression/arousal".into(),
             },
         ];
@@ -221,8 +221,8 @@ impl ExposureProfile {
             name: "ros4hri".into(),
             endpoints: vec![
                 endpoint(
-                    "/robot_face/expression",
-                    "hri_msgs/Expression",
+                    "/skill/set_expression",
+                    "interaction_skills/SetExpression",
                     Flow::In,
                     &expression_routes,
                 ),
@@ -419,7 +419,7 @@ mod tests {
         let profile = ExposureProfile::ros4hri();
         let topics: Vec<&str> = profile.endpoints.iter().map(|e| e.topic.as_str()).collect();
         for expected in [
-            "/robot_face/expression",
+            "/skill/set_expression",
             "/robot_face/look_at",
             "/expressive_face/look_at",
             "/tts/viseme",
@@ -430,7 +430,23 @@ mod tests {
         ] {
             assert!(topics.contains(&expected), "missing {expected}");
         }
-        // The commands flow in; the image and the speech text flow out.
+        let expression = profile
+            .endpoints
+            .iter()
+            .find(|e| e.topic == "/skill/set_expression")
+            .unwrap();
+
+        assert_eq!(expression.ros_type, "interaction_skills/SetExpression");
+        assert_eq!(
+            expression
+                .routes
+                .iter()
+                .map(|r| r.field.as_str())
+                .collect::<Vec<_>>(),
+            ["expression.expression", "expression.valence", "expression.arousal"]
+        );
+
+        // The commands flow in and the image flows out; nothing else does.
         for endpoint in &profile.endpoints {
             let expected = if endpoint.topic.starts_with("/robot_face/image_raw")
                 || endpoint.topic == "/robot_face/speech"
