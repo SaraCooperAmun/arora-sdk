@@ -209,13 +209,7 @@ impl ExposureProfile {
                     &look_at_routes,
                 ),
                 endpoint(
-                    "/robot_face/tts",
-                    "std_msgs/String",
-                    Flow::In,
-                    &speech_routes,
-                ),
-                endpoint(
-                    "/expressive_face/speech",
+                    "/robot_face/speech",
                     "std_msgs/String",
                     Flow::In,
                     &speech_routes,
@@ -410,7 +404,6 @@ mod tests {
         for expected in [
             "/skill/set_expression",
             "/robot_face/look_at",
-            "/expressive_face/look_at",
             "/tts/visemes",
             "/robot_face/tts",
             "/robot_face/image_raw",
@@ -470,21 +463,6 @@ mod tests {
             };
             assert_eq!((route.field.as_str(), route.key.as_str()), ("", key));
         }
-    }
-
-    #[test]
-    fn ros4hri_preset_subscribes_to_viseme_topic() {
-        let profile = ExposureProfile::ros4hri();
-
-        let viseme = profile
-            .endpoints
-            .iter()
-            .find(|e| e.topic == "/tts/visemes")
-            .expect("/tts/visemes is in the preset");
-
-        assert_eq!(viseme.ros_type, "hri_msgs/Viseme");
-        assert_eq!(viseme.flow, Flow::In);
-        assert!(viseme.routes.is_empty());
     }
 
     #[test]

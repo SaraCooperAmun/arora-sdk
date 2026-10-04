@@ -226,3 +226,91 @@ Set the ROS 2 middleware:
 
 ```bash
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+```
+
+Check the topic:
+
+```bash
+ros2 topic info /tts/visemes
+```
+
+The topic should use `hri_msgs/Visemes` and show the Vizij bridge as a subscriber.
+
+To publish a single viseme, provide one element in the `visemes` array:
+
+```bash
+ros2 topic pub --once /tts/visemes hri_msgs/msg/Visemes \
+  "{visemes: [{value: 12}]}"
+```
+
+For a single viseme sent independently, only the `value` is required. The `time` and `duration` fields are left empty.
+
+For example, the command above sends the `IH` viseme:
+
+```text
+IH = 12
+```
+
+When sending a sequence of visemes in one message, the `visemes` array can contain multiple elements, with `time` and `duration` specifying the timing of each viseme:
+
+```bash
+ros2 topic pub --once /tts/visemes hri_msgs/msg/Visemes \
+  "{visemes: [
+    {value: 12, time: 0.0, duration: 0.1},
+    {value: 8,  time: 0.1, duration: 0.1},
+    {value: 13, time: 0.2, duration: 0.1},
+    {value: 14, time: 0.3, duration: 0.1},
+    {value: 10, time: 0.4, duration: 0.1},
+    {value: 1,  time: 0.5, duration: 0.1},
+    {value: 7,  time: 0.6, duration: 0.1},
+    {value: 0,  time: 0.7, duration: 0.1}
+  ]}"
+```
+
+The sequence corresponds to:
+
+```text
+IH → NN → OH → OU → AA → PP → SS → SIL
+```
+
+Alternatively, individual visemes can be published repeatedly:
+
+```bash
+for v in 12 8 13 14 10 1 7 0; do
+  ros2 topic pub --once /tts/visemes hri_msgs/msg/Visemes \
+    "{visemes: [{value: $v}]}"
+  sleep 0.15
+done
+```
+
+To inspect the ROS messages:
+
+```bash
+ros2 topic echo /tts/visemes
+```
+
+A single-viseme message has the form:
+
+```yaml
+visemes:
+- value: 12
+  time: 0.0
+  duration: 0.0
+```
+
+For a timed sequence, each array element contains its `value`, `time`, and `duration`:
+
+```yaml
+visemes:
+- value: 12
+  time: 0.0
+  duration: 0.1
+- value: 8
+  time: 0.1
+  duration: 0.1
+- value: 13
+  time: 0.2
+  duration: 0.1
+```
+
+The bridge uses the `value` of each `Viseme` element to select the corresponding internal Vizij viseme key. The `time` and `duration` fields are available for timed viseme streaming.
