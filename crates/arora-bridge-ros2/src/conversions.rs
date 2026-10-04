@@ -799,8 +799,8 @@ mod tests {
     }
 
     #[test]
-    fn viseme_message_round_trips_and_extracts_value() {
-        use arora_msgs_ros2::hri_msgs;
+    fn set_expression_routes_nested_expression_fields() {
+        use arora_msgs_ros2::{hri_msgs, interaction_skills, std_skills};
         use arora_types::value_serde::bridge::to_value_seeded;
         use arora_types::AroraType;
 
