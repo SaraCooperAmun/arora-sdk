@@ -339,6 +339,27 @@ fn coerce_xyz(value: &Value, ty: &arora_types::ty::low::Type) -> Option<Value> {
     (components.len() == 3).then_some(Value::ArrayF32(components))
 }
 
+fn vizij_viseme_key(value: u8) -> Option<&'static str> {
+    match value {
+        0 => Some("standard/vizij/viseme/sil"),
+        1 => Some("standard/vizij/viseme/PP"),
+        2 => Some("standard/vizij/viseme/FF"),
+        3 => Some("standard/vizij/viseme/TH"),
+        4 => Some("standard/vizij/viseme/DD"),
+        5 => Some("standard/vizij/viseme/kk"),
+        6 => Some("standard/vizij/viseme/CH"),
+        7 => Some("standard/vizij/viseme/SS"),
+        8 => Some("standard/vizij/viseme/nn"),
+        9 => Some("standard/vizij/viseme/RR"),
+        10 => Some("standard/vizij/viseme/aa"),
+        11 => Some("standard/vizij/viseme/E"),
+        12 => Some("standard/vizij/viseme/ih"),
+        13 => Some("standard/vizij/viseme/oh"),
+        14 => Some("standard/vizij/viseme/ou"),
+        _ => None,
+    }
+}
+
 pub fn setup_typed_key_subscriber(
     node: &mut Node,
     topic: &str,
@@ -376,7 +397,79 @@ pub fn setup_typed_key_subscriber(
                     Ok(bytes) => match cdr::decode(&message_type, registry.types(), &bytes) {
                         Ok(value) => {
                             let mut change = StateChange::new();
-                            if routes.is_empty() {
+                            if ros_type == "hri_msgs/Visemes" {
+                                eprintln!("[VISEME] received hri_msgs/Visemes");
+
+                                let Value::Structure(message) = &value else {
+                                    warn!("hri_msgs/Visemes is not a structure");
+                                    continue;
+                                };
+
+                                eprintln!("[VISEME] value={value:?}");
+                                eprintln!("[VISEME] structure={message:?}");
+
+                                let Some(field) = message.fields.first() else {
+                                    warn!("hri_msgs/Visemes has no fields");
+                                    continue;
+                                };
+
+                                let Value::ArrayStructure { elements, .. } = field.value.as_ref() else {
+                                    warn!(
+                                        "hri_msgs/Visemes field is not an ArrayStructure: {:?}",
+                                        field.value
+                                    );
+                                    continue;
+                                };
+
+                                eprintln!("[VISEME] array length={}", elements.len());
+
+                                let Some(viseme) = elements.first() else {
+                                    warn!("received empty hri_msgs/Visemes message");
+                                    continue;
+                                };
+
+                                let Some(field) = viseme.fields.first() else {
+                                    warn!("viseme has no value field");
+                                    continue;
+                                };
+
+                                let Value::U8(value) = field.value.as_ref() else {
+                                    warn!(
+                                        "viseme 'value' has unexpected type: {:?}",
+                                        field.value
+                                    );
+                                    continue;
+                                };
+
+                                let viseme = *value;
+
+                                eprintln!("[VISEME] extracted value={viseme}");
+
+                                let Some(key) = vizij_viseme_key(viseme) else {
+                                    warn!("unknown hri_msgs/Visemes value: {viseme}");
+                                    continue;
+                                };
+
+                                let key = format!("rig/quori_latest/{key}");
+
+                                eprintln!("[VISEME] setting key={key}");
+
+                                for value in 0..=14 {
+                                    if let Some(old_key) = vizij_viseme_key(value) {
+                                        change.set.insert(
+                                            Key::from(format!("rig/quori_latest/{old_key}")),
+                                            Some(Value::F32(0.0)),
+                                        );
+                                    }
+                                }
+
+                                change.set.insert(
+                                    Key::from(key),
+                                    Some(Value::F32(1.0)),
+                                );
+
+                                eprintln!("[VISEME] StateChange prepared");
+                            } else if routes.is_empty() {
                                 change.set.insert(Key::from(path.clone()), Some(value));
                             } else {
                                 // All routed fields of one message land in one
@@ -713,66 +806,30 @@ mod tests {
 
         let registry = arora_msgs_ros2::registry();
         let message_type = registry
-            .get_by_name("interaction_skills/SetExpression")
-            .expect("interaction_skills/SetExpression is registered")
+            .get_by_name("hri_msgs/Visemes")
+            .expect("hri_msgs/Visemes is registered")
             .clone();
 
-        let msg = interaction_skills::SetExpression {
-            meta: std_skills::Meta {
-                caller: "test".into(),
-                priority: std_skills::Meta::NORMAL_PRIORITY,
-            },
-            expression: hri_msgs::Expression {
-                expression: "happy".into(),
-                valence: 0.8,
-                arousal: 0.2,
-                ..Default::default()
-            },
+        let msg = hri_msgs::Visemes {
+            visemes: vec![hri_msgs::Viseme {
+                value: hri_msgs::Viseme::AA,
+                time: 0.0,
+                duration: 0.2,
+            }],
         };
 
-        let (ty, reg) =
-            <interaction_skills::SetExpression as AroraType>::arora_type_with_registry();
-
-        let value = to_value_seeded(&msg, &ty, &reg).expect("SetExpression to value");
+        let (ty, reg) = <hri_msgs::Visemes as AroraType>::arora_type_with_registry();
+        let value = to_value_seeded(&msg, &ty, &reg).expect("Viseme to value");
 
         let bytes =
-            cdr::encode(&message_type, registry.types(), &value).expect("encode SetExpression");
+            cdr::encode(&message_type, registry.types(), &value).expect("encode Viseme");
 
         let decoded =
-            cdr::decode(&message_type, registry.types(), &bytes).expect("decode SetExpression");
+            cdr::decode(&message_type, registry.types(), &bytes).expect("decode Viseme");
 
-        assert_eq!(
-            extract_route(
-                &decoded,
-                &message_type,
-                registry.types(),
-                "expression.expression"
-            )
-            .expect("expression.expression"),
-            Value::String("happy".into())
-        );
+        assert_eq!(decoded, value);
 
-        assert_eq!(
-            extract_route(
-                &decoded,
-                &message_type,
-                registry.types(),
-                "expression.valence"
-            )
-            .expect("expression.valence"),
-            Value::F32(0.8)
-        );
-
-        assert_eq!(
-            extract_route(
-                &decoded,
-                &message_type,
-                registry.types(),
-                "expression.arousal"
-            )
-            .expect("expression.arousal"),
-            Value::F32(0.2)
-        );
+        assert_eq!(decoded, value);
     }
 
     /// The profile fan-out resolves dotted field paths by name against the
