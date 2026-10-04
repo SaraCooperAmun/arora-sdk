@@ -4,6 +4,113 @@ All notable changes to `arora-bridge-ros2`. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [8.1.0] - 2026-10-02
+
+### Added
+
+- **Methods with optional parameters or returns are served.** An optional of a
+  scalar or a message travels as the bounded sequence `T[<=1]` in a synthesized
+  service's request and reply and in a synthesized action's goal: empty is
+  absent, one element is present, and a message holding more is refused. A
+  run's result or feedback that is an optional of a scalar is typed the same
+  way. An optional array still has no ROS 2 form, and its method is skipped.
+
+### Changed
+
+- Depends on arora-msgs-ros2 2.1.
+
+## [8.0.1] - 2026-09-29
+
+### Fixed
+
+- **What an unrouted goal parameter becomes.** A parameter an action binding
+  does not route is left out of the spawn call. The resolve-time log said the
+  method then ran "on its own default"; it now states that an absent optional
+  parameter is `None`, and that the implementation supplies an absent
+  required one or fails the run. `ActionBinding::goal_routes` no longer says
+  every parameter must be routed.
+
+## [8.0.0] - 2026-09-29
+
+### Changed
+
+- **Breaking:** the input topics are the device's inputs — each key its store
+  opens to remote writers (`KeyMeta::editable`), typed from its meta — asked of
+  the device at startup. `Ros2BridgeConfig::with_input`, its `inputs` field and
+  `InputKey` are gone: an input is stated once, in the store, and every bridge
+  exposes the same set. An input whose meta states no shape gets no topic, and
+  is reported.
+- **Breaking:** depends on arora-bridge 6, whose `BridgeOp::ListKeys` replies
+  with each key's `KeyMeta`.
+
+## [7.0.0] - 2026-09-25
+
+### Changed
+
+- **Breaking:** depends on arora-types 3, arora-bridge 5, arora-msgs-ros2 2
+  and arora-behavior 9.
+- A method with an optional parameter or return is skipped, like any other
+  signature ROS 2 cannot carry.
+
+## [6.5.0] - 2026-09-24
+
+### Added
+
+- **Sequence indexing in a field route.** A numeric segment of an inbound
+  route's dotted path indexes an array (`visemes.0.value`), so a message that
+  wraps its payload in a sequence routes by the same mechanism as any other —
+  no message type is special-cased in the subscriber.
+- **The ROS4HRI preset takes a streamed viseme**, landing its ROS4HRI code on
+  `standard/ros4hri/viseme` from either shape a TTS node publishes it in: one
+  `hri_msgs/Viseme` on `/tts/viseme`, or an `hri_msgs/Visemes` on
+  `/tts/visemes`. Both carry the shape at the audio playhead, so a sequence's
+  first viseme is the one that lands; a message holding a whole alignment is a
+  timeline, and playing one out over time is a viseme player's work rather
+  than a bridge's. This is how a face lipsyncs to speech synthesized
+  elsewhere — a `/skill/say` run drives the lips from the run itself.
+
+## [6.4.0] - 2026-09-21
+
+### Added
+
+- **Outbound field fan-in.** A typed output composes its message from several
+  device keys, the mirror of the inbound fan-out: each `FieldRoute` places one
+  key's value at a dotted field of the message (a scalar coerced to the
+  field's kind, a vec3 key becoming a point, a nested message or an array
+  taken as is), the other fields keep their last value (their type's default
+  until written), and a change to any routed key publishes the whole message
+  again — once per change, however many of its keys the change carried. An
+  `ExposureProfile`'s outbound endpoints route every field they declare
+  instead of only their first route's key; `TypedOutput` carries the routes.
+- **The ROS4HRI preset publishes what the face is saying**: `/robot_face/speech`
+  (`std_msgs/String`) from the speech state key
+  `standard/ros4hri/speech/text` — the utterance while a say run speaks, empty
+  at rest — for subtitles and transcripts.
+
+### Removed
+
+- **The preset's text inputs `/robot_face/tts` and `/expressive_face/speech`.**
+  Text is not commanded through a topic: speaking is the `/skill/say` action,
+  which is what produces visemes and the speech state. The key they landed on
+  is now the speech state key above, written by the device.
+
+## [6.3.1] - 2026-09-17
+
+### Fixed
+
+- **Action and service servers match native DDS clients.** Every service
+  endpoint the bridge serves — the plain method services and an action's goal,
+  result, cancel and feedback — rides volatile durability on both the request
+  and the reply side, the profile `rmw_qos_profile_services_default` gives
+  every rclcpp, rclpy and `ros2` CLI client. They requested transient-local,
+  and DDS refuses to match a reader that requests more durability than the
+  writer offers, so under `rmw_fastrtps_cpp` a native action client waited on
+  "action server not available" forever while `ros2 action list` showed the
+  server. The status topic stays transient-local. A `ros2-client` peer must
+  request volatile on its services to match, as a native client does — the
+  crate's tests do, and a consumer's own test clients need the same. The Zenoh
+  backend, which matches without durability, is unaffected.
+
 ## [6.3.0] - 2026-09-10
 
 ### Added

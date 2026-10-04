@@ -163,7 +163,7 @@ dependencies = [
 
 [[package]]
 name = "arora"
-version = "9.11.1"
+version = "11.3.0"
 dependencies = [
  "anyhow",
  "arora-behavior",
@@ -177,7 +177,6 @@ dependencies = [
  "arora-types",
  "async-trait",
  "clap 4.6.4",
- "crypto_secretbox",
  "dirs",
  "env_filter 0.1.4",
  "env_logger",
@@ -186,6 +185,7 @@ dependencies = [
  "log",
  "ratatui",
  "rustls 0.23.43",
+ "serde_json",
  "serde_yaml 0.9.34+deprecated",
  "sysinfo",
  "test-rust-wasm",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "arora-behavior"
-version = "8.4.0"
+version = "9.1.0"
 dependencies = [
  "arora-types",
  "semver",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "arora-behavior-tree"
-version = "7.0.0"
+version = "8.0.0"
 dependencies = [
  "anyhow",
  "arora-behavior",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "arora-behavior-tree-types"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "arora-behavior",
  "arora-types",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "arora-bridge"
-version = "4.1.0"
+version = "6.0.0"
 dependencies = [
  "arora-types",
  "async-trait",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "arora-bridge-ros2"
-version = "6.3.0"
+version = "8.1.0"
 dependencies = [
  "arora-behavior",
  "arora-behavior-tree-types",
@@ -290,8 +290,10 @@ dependencies = [
 
 [[package]]
 name = "arora-bridge-ws"
-version = "4.0.0"
+version = "7.1.0"
 dependencies = [
+ "arora-behavior",
+ "arora-behavior-tree-types",
  "arora-bridge",
  "arora-types",
  "async-trait",
@@ -307,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "arora-buffers"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "arora-types",
@@ -342,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "arora-engine"
-version = "4.1.0"
+version = "5.1.0"
 dependencies = [
  "anyhow",
  "arora-buffers",
@@ -374,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "arora-hal"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "arora-types",
  "async-trait",
@@ -386,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "arora-hal-restful"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "arora",
@@ -406,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "arora-hal-ros2"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "arora",
@@ -449,6 +451,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "arora-module"
+version = "2.1.0"
+dependencies = [
+ "arora-behavior",
+ "arora-buffers",
+ "arora-engine",
+ "arora-module-macros",
+ "arora-types",
+ "serde_yaml 0.9.34+deprecated",
+ "trybuild",
+]
+
+[[package]]
 name = "arora-module-cli"
 version = "0.1.1"
 dependencies = [
@@ -472,7 +487,7 @@ dependencies = [
 
 [[package]]
 name = "arora-module-core"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "arora-registry",
  "arora-types",
@@ -509,8 +524,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "arora-module-macros"
+version = "2.1.0"
+dependencies = [
+ "arora-types",
+ "proc-macro2",
+ "quote",
+ "serde_yaml 0.9.34+deprecated",
+ "syn 3.0.3",
+ "uuid",
+]
+
+[[package]]
 name = "arora-module-rust"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "arora-module-core",
@@ -536,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "arora-msgs-ros2"
-version = "1.2.0"
+version = "2.1.0"
 dependencies = [
  "arora-types",
  "proc-macro2",
@@ -563,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "arora-registry"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "arora-types",
@@ -600,22 +627,23 @@ dependencies = [
 
 [[package]]
 name = "arora-simple-data-store"
-version = "2.0.0"
+version = "3.1.1"
 dependencies = [
  "arora-types",
 ]
 
 [[package]]
 name = "arora-studio-bridge-client"
-version = "6.1.0"
+version = "8.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6149c5c40cf84cff3fb7d3efc3541559050922a0a0d9e800941f83b738df7516"
+checksum = "768aed17a7a7818e950726da4008fede0c0e9d72c48f5a37d311d05eaedd0dd6"
 dependencies = [
  "arora-bridge",
  "arora-types",
  "async-stream",
  "async-trait",
  "chrono",
+ "crypto_secretbox",
  "firestore",
  "futures",
  "futures-util",
@@ -637,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "arora-types"
-version = "2.5.1"
+version = "3.3.0"
 dependencies = [
  "arora-types-derive",
  "async-trait",
@@ -660,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "arora-types-derive"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -688,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "arora-web"
-version = "6.1.0"
+version = "8.0.0"
 dependencies = [
  "arora",
  "arora-engine",
@@ -1623,7 +1651,7 @@ dependencies = [
  "serde_json",
  "syn 2.0.119",
  "tempfile",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -3590,7 +3618,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -5008,13 +5036,11 @@ name = "polly"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arora-behavior",
  "arora-behavior-tree",
- "arora-behavior-tree-types",
- "arora-behavior-tree-types-yaml",
- "arora-buffers",
  "arora-engine",
+ "arora-module",
  "arora-module-core",
- "arora-module-rust",
  "arora-registry",
  "arora-types",
  "aws-config",
@@ -6118,7 +6144,7 @@ dependencies = [
 [[package]]
 name = "semio-client"
 version = "0.1.0"
-source = "git+https://github.com/semio-ai/semio-client.git?branch=main#84bf151b1251848ad4c66aa14015451e0f04df61"
+source = "git+https://github.com/semio-ai/semio-client.git?branch=main#cbdf1a8bee7a7170ef26f1fab8d8c3719463226c"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6141,8 +6167,8 @@ dependencies = [
 
 [[package]]
 name = "semio-record"
-version = "0.1.0"
-source = "git+https://github.com/semio-ai/semio-record.git?branch=main#0b236345693c8936623afef418e130b128668d9b"
+version = "1.0.1"
+source = "git+https://github.com/semio-ai/semio-record.git?branch=main#465c27df0cc4935766cde8ce536d8f7a5dd4b69a"
 dependencies = [
  "anyhow",
  "arora-types",
@@ -6756,9 +6782,9 @@ dependencies = [
 
 [[package]]
 name = "studio-bridge-msgs"
-version = "4.0.0"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d33e3c9d81b89b46140184efa3b8c16d8b7e68a52bae43b081766b9e4bc4d2b"
+checksum = "d1d5ca450c72ac4252c6e8a8eb141b130224e3faf7fc3c6939bf94f50a9c4a53"
 dependencies = [
  "arora-types",
  "chrono",
@@ -6894,6 +6920,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
+name = "target-tuple"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "876fef147edbcbddc8ac5cbbba92c7b86519e314e86638596c09673b2ed01e7f"
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6982,16 +7014,7 @@ name = "test-rust-wasm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arora-buffers",
- "arora-module-core",
- "arora-module-rust",
- "arora-registry",
- "arora-types",
- "bytes",
- "derive_more 2.1.1",
- "serde",
- "tokio",
- "uuid",
+ "arora-module",
 ]
 
 [[package]]
@@ -7243,6 +7266,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "1.1.6+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
+dependencies = [
+ "indexmap 2.14.0",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 1.0.4",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "0.7.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7463,6 +7501,21 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "trybuild"
+version = "1.0.121"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0cabaa10be1917331a313866bd94526343e03c77bcf69144b62b072ad35d47c"
+dependencies = [
+ "glob",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "target-tuple",
+ "termcolor",
+ "toml 1.1.6+spec-1.1.0",
+]
 
 [[package]]
 name = "tungstenite"
@@ -8130,7 +8183,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "sha2 0.10.9",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
  "wasmtime-environ",
  "windows-sys 0.61.2",
  "zstd",
@@ -8525,7 +8578,7 @@ version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12342cb4d8e3b046f3d80effd474a7a02447231330ef77d71daa6fbc40681143"
 dependencies = [
- "windows-core 0.57.0",
+ "windows-core",
  "windows-targets 0.52.6",
 ]
 
@@ -8535,23 +8588,10 @@ version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2ed2439a290666cd67ecce2b0ffaad89c2a56b976b736e6ece670297897832d"
 dependencies = [
- "windows-implement 0.57.0",
- "windows-interface 0.57.0",
+ "windows-implement",
+ "windows-interface",
  "windows-result 0.1.2",
  "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
-dependencies = [
- "windows-implement 0.60.2",
- "windows-interface 0.59.3",
- "windows-link",
- "windows-result 0.4.1",
- "windows-strings",
 ]
 
 [[package]]
@@ -8566,32 +8606,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-implement"
-version = "0.60.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "windows-interface"
 version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29bee4b38ea3cde66011baa44dba677c432a78593e202392d1e9070cf2a7fca7"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "windows-interface"
-version = "0.59.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -9151,7 +9169,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "serde_yaml 0.9.34+deprecated",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "uhlc",
  "validated_struct",

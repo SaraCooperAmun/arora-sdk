@@ -281,6 +281,46 @@
         color: var(--text-dim);
         font-size: 12px;
       }
+      #methods,
+      #device-keys {
+        padding: 0 16px;
+      }
+      #device-keys h2 {
+        font-size: 13px;
+        color: var(--text-dim);
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .device-key {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 4px 0;
+        font-size: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .device-key .path {
+        color: var(--text-dim);
+        overflow-wrap: anywhere;
+      }
+      .method {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .method .name {
+        font-weight: 600;
+        min-width: 120px;
+      }
+      .method input {
+        flex: 1 1 100px;
+        min-width: 80px;
+      }
     </style>
   </head>
   <body>
@@ -312,7 +352,9 @@
       </div>
     </header>
     <nav id="tabs"></nav>
+    <section id="methods"></section>
     <main id="main"></main>
+    <section id="device-keys"></section>
 
     <script>
       let ws = null;
@@ -323,6 +365,15 @@
       let pending = {};
       let flushTimer = null;
       let connectTimeout = null;
+      // The device's methods, and the last run each task-shaped one started —
+      // what a Stop halts.
+      let methods = [];
+      let runs = new Map();
+      // The keys the device holds that nothing describes as an input: shown with
+      // the value they held when listed, because subscribing to them would
+      // stream whatever changes every step.
+      let deviceKeys = [];
+      let deviceValues = new Map();
 
       const $ = (id) => document.getElementById(id);
       const wsPort = location.port || "9000";
@@ -334,6 +385,8 @@
       const searchInput = $("search");
       const mainEl = $("main");
       const tabsEl = $("tabs");
+      const methodsEl = $("methods");
+      const deviceKeysEl = $("device-keys");
 
       const numberSuffixes = ["f64", "f32", "i64", "i32", "u64", "u32"];
 
@@ -374,19 +427,17 @@
         return fallback;
       }
 
-      function hasMeaningfulNumber(obj) {
-        return Number.isFinite(extractNumeric(obj, Number.NaN));
-      }
-
+      // Two keys can normalize to the same path; the better described one wins.
       function metadataScore(key) {
+        const meta = (key && key.__meta) || {};
         let score = 0;
-        if (hasMeaningfulNumber(key?.min)) {
+        if (typeof meta.min === "number") {
           score += 4;
         }
-        if (hasMeaningfulNumber(key?.max)) {
+        if (typeof meta.max === "number") {
           score += 4;
         }
-        if (key?.default_value !== undefined) {
+        if (meta.default !== undefined) {
           score += 3;
         }
         if (typeof key?.path === "string" && key.path.trim().length) {
@@ -471,11 +522,22 @@
         return span / 2000;
       }
 
+      // A key is a control when the device opened it to writes and it holds a
+      // number. Its range is what the store says; without one the slider spans
+      // 0..1 and the number box, which is what actually writes, takes any value.
+      const numericTypes = ["f64", "f32", "i64", "i32", "i16", "i8", "u64", "u32", "u16", "u8"];
+
+      function isControl(key) {
+        const meta = (key && key.__meta) || {};
+        return (
+          typeof key.path === "string" &&
+          meta.editable === true &&
+          numericTypes.includes(String(meta.ty || ""))
+        );
+      }
+
       function deriveControls(keys) {
-        const normalized = (keys || []).filter((s) => {
-          const kind = s && s.kind ? String(s.kind).toLowerCase() : "";
-          return kind === "input" && typeof s.path === "string";
-        });
+        const normalized = (keys || []).filter(isControl);
 
         const byCanonicalPath = new Map();
 
@@ -491,9 +553,10 @@
               ? `${parts[0]}/${parts[1]}`
               : parts[0] || "unscoped";
           const track = parts.length >= 3 ? parts.slice(2).join("/") : "";
-          const min = extractNumeric(s.min, 0);
-          const max = extractNumeric(s.max, min + 1);
-          const fallback = extractNumeric(s.default_value, min);
+          const meta = s.__meta || {};
+          const min = typeof meta.min === "number" ? meta.min : 0;
+          const max = typeof meta.max === "number" ? meta.max : min + 1;
+          const fallback = extractNumeric(meta.default, min);
           const control = {
             path,
             namespace,
@@ -811,6 +874,135 @@
         );
       }
 
+      // A parameter's value as the wire wants it: the arora Type names the
+      // Value variant, and the text typed in the box is read as that.
+      function argumentValue(type, text) {
+        if (numberSuffixes.includes(type)) {
+          return { [type]: Number(text) };
+        }
+        if (type === "bool") {
+          return { bool: text === "true" || text === "1" };
+        }
+        if (type === "str") {
+          return { str: text };
+        }
+        // Anything else travels as the JSON the client types: an enumeration,
+        // a structure, an array.
+        return JSON.parse(text);
+      }
+
+      function callMethod(name) {
+        const method = methods.find((m) => m.path === name);
+        if (!method || !ws || ws.readyState !== 1) {
+          return;
+        }
+        const args = {};
+        try {
+          (method.params || []).forEach((param) => {
+            const input = document.getElementById("arg-" + name + "-" + param.name);
+            const text = (input && input.value.trim()) || "";
+            if (!text) {
+              return;
+            }
+            args[param.name] = argumentValue(param.param_type, text);
+          });
+        } catch (error) {
+          status("off", name + ": " + error.message);
+          return;
+        }
+        ws.send(
+          JSON.stringify({
+            type: "invoke",
+            method: name,
+            args,
+            request_id: name + "-" + Date.now(),
+          }),
+        );
+      }
+
+      function haltMethod(name) {
+        const run = runs.get(name);
+        if (!run || !ws || ws.readyState !== 1) {
+          return;
+        }
+        ws.send(
+          JSON.stringify({
+            type: "halt",
+            run,
+            request_id: "halt-" + Date.now(),
+          }),
+        );
+        runs.delete(name);
+        rebuildMethods();
+      }
+
+      function rebuildMethods() {
+        methodsEl.innerHTML = "";
+        methods.forEach((method) => {
+          const row = document.createElement("div");
+          row.className = "method";
+          const name = document.createElement("span");
+          name.className = "name";
+          name.textContent = method.path;
+          name.title = method.description || "";
+          row.appendChild(name);
+          (method.params || []).forEach((param) => {
+            const input = document.createElement("input");
+            input.id = "arg-" + method.path + "-" + param.name;
+            input.placeholder = param.name + ": " + param.param_type;
+            row.appendChild(input);
+          });
+          const call = document.createElement("button");
+          call.className = "btn-on";
+          call.textContent = method.task ? "Start" : "Call";
+          call.onclick = () => callMethod(method.path);
+          row.appendChild(call);
+          if (method.task) {
+            const halt = document.createElement("button");
+            halt.className = "btn-warn";
+            halt.textContent = "Stop";
+            halt.disabled = !runs.has(method.path);
+            halt.onclick = () => haltMethod(method.path);
+            row.appendChild(halt);
+          }
+          methodsEl.appendChild(row);
+        });
+      }
+
+      function rebuildDeviceKeys() {
+        deviceKeysEl.innerHTML = "";
+        if (!deviceKeys.length) {
+          return;
+        }
+        const heading = document.createElement("h2");
+        heading.textContent = `Device keys (${deviceKeys.length})`;
+        const refresh = document.createElement("button");
+        refresh.className = "btn-muted";
+        refresh.textContent = "Refresh";
+        refresh.onclick = () => {
+          ws.send(JSON.stringify({ type: "list_keys" }));
+        };
+        heading.appendChild(refresh);
+        deviceKeysEl.appendChild(heading);
+        deviceKeys.forEach((key) => {
+          const row = document.createElement("div");
+          row.className = "device-key";
+          const path = document.createElement("span");
+          path.className = "path";
+          path.textContent = key.path;
+          const value = document.createElement("span");
+          const held = deviceValues.get(key.path);
+          const meta = key.__meta || {};
+          path.title = meta.description || "";
+          value.textContent =
+            held === undefined
+              ? meta.ty || ""
+              : JSON.stringify(Object.values(held)[0]);
+          row.append(path, value);
+          deviceKeysEl.appendChild(row);
+        });
+      }
+
       function requestValuesForCurrentControls() {
         if (!ws || ws.readyState !== 1 || !controls.length) {
           return;
@@ -851,6 +1043,7 @@
           rbtn.disabled = false;
           searchInput.value = "";
           ws.send(JSON.stringify({ type: "list_keys" }));
+          ws.send(JSON.stringify({ type: "list_methods" }));
           requestValuesForCurrentControls();
         };
         ws.onmessage = (event) => {
@@ -862,15 +1055,65 @@
             return;
           }
           if (message.type === "list_keys_resp") {
-            setControls(deriveControls(message.keys || []));
+            const keys = message.keys || [];
+            setControls(deriveControls(keys));
             rebuildUI();
+            // Everything the device holds that no declaration makes a control:
+            // read once, so the page shows the device without subscribing to
+            // keys that change every step.
+            deviceKeys = keys
+              .filter((key) => !isControl(key))
+              .sort((left, right) => left.path.localeCompare(right.path));
+            rebuildDeviceKeys();
+            if (deviceKeys.length) {
+              ws.send(
+                JSON.stringify({
+                  type: "read_values",
+                  keys: deviceKeys.map((key) => key.path),
+                }),
+              );
+            }
+            // The panel is pushed the keys it displays, and nothing else: the
+            // device's own keys (the clock among them) change every step.
+            ws.send(
+              JSON.stringify({
+                type: "subscribe",
+                keys: controls.map((c) => c.path),
+              }),
+            );
             requestValuesForCurrentControls();
+          } else if (message.type === "list_methods_resp") {
+            methods = (message.methods || []).slice().sort((a, b) =>
+              a.path.localeCompare(b.path),
+            );
+            rebuildMethods();
+          } else if (message.type === "invoke_resp") {
+            // A run answers with its handle, named: remember the id so Stop can
+            // halt it, and name the method the request id carried.
+            const method = (message.request_id || "").replace(/-\d+$/, "");
+            const fields =
+              (message.value &&
+                message.value.keyvalue &&
+                message.value.keyvalue.fields) ||
+              {};
+            const run = fields.run && fields.run.value && fields.run.value.str;
+            if (message.success && run) {
+              runs.set(method, run);
+              rebuildMethods();
+            } else if (!message.success) {
+              status("off", method + ": " + (message.message || "failed"));
+            }
           } else if (
             message.type === "read_values_resp" ||
             message.type === "values_changed"
           ) {
             const values = message.values || {};
+            let shown = false;
             Object.entries(values).forEach(([path, value]) => {
+              if (deviceValues.has(path) || deviceKeys.some((k) => k.path === path)) {
+                deviceValues.set(path, value);
+                shown = true;
+              }
               const numeric = extractNumeric(value);
               const control = getControlByPath(path);
               if (!control || !Number.isFinite(numeric)) {
@@ -879,6 +1122,9 @@
               control.currentValue = numeric;
             });
             refreshCurrentValues();
+            if (shown) {
+              rebuildDeviceKeys();
+            }
           }
         };
         ws.onclose = () => {
@@ -891,6 +1137,12 @@
           ws = null;
           controls = [];
           controlByPath = new Map();
+          methods = [];
+          runs = new Map();
+          deviceKeys = [];
+          deviceValues = new Map();
+          rebuildMethods();
+          rebuildDeviceKeys();
           rebuildUI();
         };
         ws.onerror = (err) => {

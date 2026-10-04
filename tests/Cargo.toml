@@ -2,7 +2,7 @@
 name = "arora-integration-tests"
 version = "0.0.0"
 edition = "2021"
-license = "Proprietary"
+license = "MIT"
 publish = false
 description = "End-to-end tests that exercise built modules via arora-cli"
 
@@ -27,9 +27,11 @@ test-cpp-2 = { path = "../modules/test-cpp-2" }
 # in-process rather than through arora-cli.
 arora-engine = { path = "../crates/arora-engine" }
 arora-buffers = { path = "../crates/arora-buffers" }
-arora-types = { path = "../crates/arora-types", version = "2" }
+arora-types = { path = "../crates/arora-types", version = "3" }
 serde_yaml = "0.9"
 uuid = "1"
+# The declared guest, host-side: its header is what the engine loads it with.
+test-rust-wasm = { path = "../modules/test-rust-wasm" }
 
 [build-dependencies]
 arora-cli = { path = "../crates/arora-cli", artifact = "bin" }

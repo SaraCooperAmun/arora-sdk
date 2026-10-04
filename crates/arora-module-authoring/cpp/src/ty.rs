@@ -104,10 +104,49 @@ pub fn type_name<'a>(context: &'a Context<'a>, ty: &FrozenTy) -> String {
             let ty = context.types.get(&array.reference.id).unwrap();
             format!("std::vector<{}>", ty.name())
         }
+        FrozenTy::FrozenOption(option) => {
+            format!(
+                "{OPTIONAL_TYPENAME}<{}>",
+                type_name(context, &option.element)
+            )
+        }
     }
 }
 
 pub const OPTIONAL_TYPENAME: &str = "std::optional";
+
+/// The type a generated parameter, field or import return wraps in its own
+/// `std::optional` (absent is `std::nullopt`). An optional of `E` flattens to
+/// `E` there, so it is `std::optional<E>` once wrapped, not a nested optional.
+pub fn wrapped_type_name<'a>(context: &'a Context<'a>, ty: &FrozenTy) -> String {
+    match ty {
+        FrozenTy::FrozenOption(option) => type_name(context, &option.element),
+        other => type_name(context, other),
+    }
+}
+
+/// The runtime function that writes a value of `ty`.
+pub fn serialize_function<'a>(context: &'a Context<'a>, ty: &FrozenTy) -> String {
+    match ty {
+        FrozenTy::FrozenOption(option) => format!(
+            "arora::buffer::serialize_optional<{}>",
+            type_name(context, &option.element)
+        ),
+        other => format!("arora::buffer::serialize<{}>", type_name(context, other)),
+    }
+}
+
+/// The runtime function that reads a value of `ty` into a
+/// `std::optional<wrapped_type_name(ty)>`.
+pub fn deserialize_function<'a>(context: &'a Context<'a>, ty: &FrozenTy) -> String {
+    match ty {
+        FrozenTy::FrozenOption(option) => format!(
+            "arora::buffer::deserialize_optional<{}>",
+            type_name(context, &option.element)
+        ),
+        other => format!("arora::buffer::deserialize<{}>", type_name(context, other)),
+    }
+}
 
 pub fn optional(ty: &TypeRef) -> TypeRef {
     TypeRef {

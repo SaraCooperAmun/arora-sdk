@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use arora_types::call::{Call, CallError, CallResult};
+use arora_types::module::declared::{AroraFunction, AroraModule};
 use arora_types::record::module::frozen::Function;
 use derive_more::{Display, Error};
 use uuid::Uuid;
@@ -63,6 +64,40 @@ pub struct HostModule {
 }
 
 impl HostModule {
+    /// The host module a declared one describes: its id, and every export of
+    /// [`AroraModule::exports`] attached under its own id with its frozen
+    /// signature, so the functions dispatch by parameter id and method
+    /// introspection lists them.
+    ///
+    /// ```ignore
+    /// engine.register_module(polly::ids::MODULE, Box::new(HostModule::of::<polly::Module>()));
+    /// ```
+    pub fn of<M: AroraModule>() -> HostModule {
+        HostModule::from_exports(M::id(), M::exports())
+    }
+
+    /// The host module that serves `exports` under `id`: each function
+    /// attached under its own id with its frozen signature, as
+    /// [`of`](Self::of) does for a declared module — for functions whose
+    /// module id is not theirs to name, such as a contract's, served under
+    /// the id of the module implementing it.
+    ///
+    /// ```ignore
+    /// let module = HostModule::from_exports(CLOUD_ID, say::exports(Cloud::new()));
+    /// ```
+    pub fn from_exports(id: Uuid, exports: Vec<AroraFunction>) -> HostModule {
+        let mut builder = ModuleBuilder::new(id);
+        for function in exports {
+            builder = builder.described_function(
+                function.id,
+                function.name,
+                function.signature,
+                function.invoke,
+            );
+        }
+        builder.build()
+    }
+
     /// The module id this was built for (the id to register it under).
     pub fn id(&self) -> Uuid {
         self.id

@@ -227,17 +227,71 @@ together with the component-model migration.
 
 ## Module surface
 
-### `module.yaml` is the single source of truth
+### A module's interface has one source of truth, and which one depends on the language
 
-Each module ships a `module.yaml` describing its types and functions.
-`arora-module-cli` generates language bindings from it (`arora-module-rust`,
-`arora-module-cpp`) and a "header" form with named symbols stripped that the
-runtime uses for identification.
+A module written in Rust declares its interface in Rust, with
+[`arora-module`](../crates/arora-module/readme.md)'s macros on the Rust module
+and its functions: the crate that implements the module carries it. A module
+written in another language ships a `module.yaml`, and `arora-module-cli`
+generates the bindings from it (`arora-module-cpp`).
+
+`module.yaml` is then one form the interface takes, not the interface: an
+export writes it, from a declaration or from the authored YAML, in the
+"header" form with named symbols stripped that the runtime identifies a module
+by. A store record is another form, and the two differ — records are versioned
+and frozen, headers are not.
+
+**The executor is the export's to name.** A declaration cannot know whether it
+will be built native or wasm; the step that produces the artifact does, and a
+header handed to `Engine::load_module` must carry it. A module linked into the
+host has no header at all: it is registered from its exports and described by
+its record.
 
 Module functions take and return a structure whose `id` matches the
 function. The first field carries the return value; subsequent fields
 correspond to mutated parameters. Values use `arora-types`'s externally-tagged
 serde representation (`{f32: 0.5}`, not `{kind: "scalar", value: 0.5}`).
+
+### A contract's functions take `&mut self`
+
+A contract (`#[arora_module::contract]`) declares functions that several
+modules implement, each under its own module id. Its methods take
+`&mut self`.
+
+**The receiver names the implementation.** A trait is implemented for a
+type, so every implementation has a type whether or not its methods take
+`self`. The receiver adds a value of that type, which the host module owns
+and hands to each call. An implementation with no state is a unit struct
+(`struct Cloud;`). It is zero-sized: the value takes no memory, and nothing
+is ever read through the reference. The receiver asks for nothing a trait
+implementation does not already need.
+
+**`&mut`, because the engine owns a host module exclusively.** A host
+module's functions are `FnMut` closures, and dispatch takes the module by
+`&mut`: one call at a time, with exclusive access. `&mut self` hands that
+access to the implementation, which changes its fields without a lock.
+
+**Considered: `&self`.** A stateful implementation would need interior
+mutability (`RefCell`, `Mutex`) to change anything, for no gain: nothing
+calls an implementation concurrently.
+
+**Considered: `self` by value.** The first call would consume the
+implementation.
+
+**Considered: no receiver, dispatch by type.** The methods would be
+`fn say(text: String) -> Status` and the host would call
+`say::exports::<Cloud>()`, so a stateless implementation would carry no value
+at all. A stateful one, though, could only keep its state in a process-wide
+`static`:
+- every module of that type in the process shares it, so two devices in one
+  process share one set of runs;
+- it needs a lock, because a `static` is shared across threads.
+
+A `#[module]`'s free functions have the same limit, which is why a host whose
+module needs state per instance cannot register it with `HostModule::of`.
+
+One receiver form keeps the macro and its rules single. Receiver-less methods
+could be added later without breaking an existing contract.
 
 ### Cross-language code-gen tools are co-located at runtime
 
@@ -398,6 +452,47 @@ path: `arora-behavior` declares the interpreter module's UUID and its
 host-function special case in dispatch — a remote editing a behavior calls a
 module function like any other, and interpreter implementations stay engine-
 agnostic behind the `BehaviorInterpreter` trait.
+
+**The interpreter describes the task runs it implements.** A method whose run
+is behavior the interpreter hosts (a node-graph fragment) has no module of
+its own. The interpreter lists it (`described_methods`), and the runtime
+indexes it under the interpreter module, the module a remote spawns task runs
+through. The alternative, a host module per such method whose function only
+fails, would describe a method under a module that does not implement it;
+every device would repeat it.
+
+### A device carries its modules as module directories
+
+The `arora` runner loads the guest modules under its device directory's
+`modules/` (and any `--module` directory): each a `header.json` beside its
+artifact. An operator installs a module by copying a directory, with no custom
+binary; the embedder path (`AroraBuilder::with_module`) stays what it is, and
+the runner feeds it from the same `load::load_module_from_parts` the CLI and
+the browser runtime use.
+
+The artifact is found by its extension — the one `.wasm` for the `wasm`
+executor, the one dynamic library for `native` — rather than by a fixed name
+or a path in the header. The header carries no path (it is written at export,
+before anyone decides where the artifact lands), and a fixed name would make
+every published artifact directory need a rename; the extension is already
+determined by the executor. One artifact per directory keeps the choice
+unambiguous.
+
+A directory that does not load fails the start, naming the module. The device
+was told to carry it: starting without it would serve a device whose
+`DescribeMethods` and dispatch disagree with what the operator installed,
+which is harder to notice than a start that says what is wrong. Two
+exceptions are deliberate: an entry whose name starts with `.` is OS metadata
+(`.DS_Store`, an AppleDouble `._x.wasm` beside its `x.wasm`) — a device
+directory copied through a file manager would otherwise never start — and a
+`modules/` without any directory carries no module.
+
+One module id, one module, refused by the builder: every source of guest
+modules (an embedder's `with_module`, the device directory, `--module`)
+converges in `AroraBuilder::build`, while the engine answers an already-loaded
+id with Ok, which would dispatch the first and describe the last. The device
+directory reader refuses the same case earlier, naming the two directories,
+because the builder sees headers, not where they came from.
 
 ### Predetermined keys are conventions, not wiring
 

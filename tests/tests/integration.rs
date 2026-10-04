@@ -13,7 +13,8 @@ fn workspace_root() -> PathBuf {
     dir
 }
 
-fn run(args: &[&str]) {
+/// Run arora-cli and return what it printed: each call's result, as YAML.
+fn run(args: &[&str]) -> String {
     let output = Command::new(ARORA_CLI)
         .args(args)
         .output()
@@ -25,15 +26,24 @@ fn run(args: &[&str]) {
         eprintln!("{}", String::from_utf8_lossy(&output.stderr));
         panic!("arora-cli {args:?} failed with status {}", output.status);
     }
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 #[test]
 fn call_test_rust_wasm_from_engine() {
-    let module_root = workspace_root().join("modules").join("test-rust-wasm");
-    let module_yaml = module_root
-        .join("src")
-        .join("arora_generated")
-        .join("module.yaml");
+    // The module declares itself in Rust: the header the engine loads it with
+    // is written from that declaration, which is what an export step does.
+    let module_yaml = std::env::temp_dir().join("arora-test-rust-wasm-header.yaml");
+    let header = test_rust_wasm::test_rust_wasm::header(arora_types::module::low::Executor {
+        name: "wasm".to_string(),
+        min_version: None,
+        max_version: None,
+    });
+    std::fs::write(
+        &module_yaml,
+        serde_yaml::to_string(&header).expect("the declared header serializes"),
+    )
+    .expect("writing the header");
     // Use the artifact dependency path from build script
     let wasm = PathBuf::from(env!("CARGO_CDYLIB_FILE_TEST_RUST_WASM_test_rust_wasm"));
     run(&[
@@ -46,6 +56,60 @@ fn call_test_rust_wasm_from_engine() {
     ]);
 }
 
+/// A C++ module's optional parameter and return, through the generated
+/// bindings: a present argument — framed or bare — comes back incremented, an
+/// absent one or an explicit `None` comes back as `None`.
+#[test]
+fn call_test_cpp_with_optionals() {
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let modules_dir = workspace_root()
+        .join("target")
+        .join(profile)
+        .join("modules");
+    let header = modules_dir.join("test-cpp").join("module.yaml");
+    let exe = modules_dir.join("test-cpp.wasm");
+    let call = |args: &str| {
+        run(&[
+            "--header",
+            header.to_str().unwrap(),
+            "--exe",
+            exe.to_str().unwrap(),
+            "--call",
+            &format!("id: a24fd5ab-baf8-4f44-af41-053a54b3fa81\n{args}"),
+        ])
+    };
+    let present = call(concat!(
+        "args:\n",
+        "- id: b3ec8dd2-2df1-43ae-bf2d-0a567c998243\n",
+        "  value:\n",
+        "    option:\n",
+        "      u32: 41\n",
+    ));
+    assert!(present.contains("u32: 42"), "{present}");
+    let bare = call(concat!(
+        "args:\n",
+        "- id: b3ec8dd2-2df1-43ae-bf2d-0a567c998243\n",
+        "  value:\n",
+        "    u32: 41\n",
+    ));
+    assert!(bare.contains("u32: 42"), "{bare}");
+    let explicit_none = call(concat!(
+        "args:\n",
+        "- id: b3ec8dd2-2df1-43ae-bf2d-0a567c998243\n",
+        "  value:\n",
+        "    option: null\n",
+    ));
+    assert!(explicit_none.contains("option: null"), "{explicit_none}");
+    let absent = call("args: []\n");
+    assert!(absent.contains("option: null"), "{absent}");
+}
+
+/// The arguments arrive whatever their order (here, not sorted by id), and a
+/// structure argument decodes: the function returns 1 only when both did.
 #[test]
 fn call_test_cpp_2_from_engine_with_struct() {
     let workspace = workspace_root();
@@ -61,7 +125,7 @@ fn call_test_cpp_2_from_engine_with_struct() {
     let test_cpp_2_records = test_cpp_2_root.join("records");
     let test_cpp_records_published = modules_dir.join("test-cpp").join("records");
 
-    run(&[
+    let result = run(&[
         "--include",
         test_cpp_2_records.to_str().unwrap(),
         "--include",
@@ -94,4 +158,5 @@ fn call_test_cpp_2_from_engine_with_struct() {
             "          i32: 113\n",
         ),
     ]);
+    assert!(result.contains("i32: 1\n"), "{result}");
 }
