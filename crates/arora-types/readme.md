@@ -41,6 +41,13 @@ functions. Their declaration may involve references to existing [types](#type-ty
 - as the key or value type of a map (`TypeRef::Map`). This kind of reference is
   not used in this project, in practice.
 
+A module written in Rust can carry its own interface instead of a `module.yaml`:
+the marker type its declaration emits implements
+[`AroraModule`](src/module/declared.rs),
+which yields the `Header` for a given executor (the exporter names it), the
+store record, and its exported functions, callable. The trait is what
+`arora-types` provides; the declaration macros live in `arora-module`.
+
 ## Type (`ty`)
 
 Structured types can be described in both
@@ -202,8 +209,11 @@ The walk covers scalars, strings, nested structures and homogeneous arrays. A
 scalar array goes through the `write_*_array` / `read_*_array` bulk methods (the
 element type framed once, not re-tagged per element); an array of structures
 through `begin_struct_array` / `begin_struct_element`, each element a headerless
-struct body. Enumerations, options and maps extend the trait and the walk
-together.
+struct body. An optional goes through `begin_option` / `enter_option`: a
+presence flag, then the element when present. Each format spells the flag its
+own way: ROS 2 CDR writes it as the count, 0 or 1, of a bounded sequence
+`T[<=1]`. A format with no optional form returns an error there. Enumerations
+and maps extend the trait and the walk together.
 
 ## Web Bindings
 

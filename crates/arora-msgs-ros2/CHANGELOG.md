@@ -2,6 +2,38 @@
 
 All notable changes.
 
+## [2.1.0] - 2026-10-02
+
+### Added
+
+- **An optional travels as the bounded sequence `T[<=1]`**, the ROS 2 spelling
+  of an optional field. CDR writes its count, 0 or 1, then the element when
+  present, and refuses a larger count on decode. `ros2_representable` accepts an
+  optional of a ROS scalar or a registry message, and the REP-2016 hasher
+  spells it `T[<=1]`, so a type holding one hashes as the `.msg` declaring the
+  bounded sequence does (checked against Jazzy's
+  `rcl_interfaces/msg/ParameterDescriptor`). A message type read from a `.msg`
+  never holds an optional: a bounded sequence declared there stays a sequence.
+
+## [2.0.0] - 2026-09-25
+
+### Changed
+
+- **Breaking:** depends on arora-types 3. CDR refuses an optional value: ROS 2
+  messages have no optional form.
+
+## [1.3.0] - 2026-09-24
+
+### Added
+
+- **`hri_msgs/Viseme` and `hri_msgs/Visemes`**, the lip shapes a TTS node
+  aligns to speech: the 15-shape constants (the Oculus/Meta set), a `value`,
+  and the `time`/`duration` that place it in the utterance; `Visemes` is a
+  sequence of them. Neither exists upstream — the README's "Departures from
+  upstream" table is the record of it — but the names and fields are what the
+  ROS4HRI TTS nodes publishing `/tts/viseme` and `/tts/visemes` already use,
+  so a face built from these files hears them.
+
 ## [1.2.0] - 2026-09-10
 
 ### Added

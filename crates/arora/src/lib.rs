@@ -16,6 +16,15 @@
 //! drive it with [`step`](Arora::step) (once per frame) or
 //! [`run`](Arora::run) (the visible loop over `step`).
 
+/// A device's directory: what the device keeps of its own from one run to the
+/// next, each use in a subdirectory of its own.
+#[cfg(feature = "native")]
+pub mod device_dir;
+/// A module directory: a guest module's header beside its artifact, the form a
+/// device carries a module in — under its device directory's `modules/`, or
+/// anywhere `--module` names.
+#[cfg(feature = "native")]
+pub mod module_dir;
 mod module_discovery;
 #[cfg(feature = "native")]
 pub mod operator;
@@ -32,8 +41,17 @@ pub mod studio;
 #[cfg(feature = "tui")]
 pub mod tui;
 
+/// The open local bridge's crate, re-exported: an embedder configuring the
+/// bridge it hands to [`local_ws_bridge_with`] names `ServerConfig` here instead
+/// of depending on the crate separately, so the version it configures is the one
+/// this arora serves.
 #[cfg(feature = "native")]
-pub use run::{local_ws_bridge, run, run_with, run_with_frontend, run_with_hal, DeviceCli};
+pub use arora_bridge_ws as bridge_ws;
+#[cfg(feature = "native")]
+pub use run::{
+    local_ws_bridge, local_ws_bridge_with, run, run_with, run_with_frontend, run_with_hal,
+    serve_local_ws_bridge, standard_frontend, DeviceCli,
+};
 pub use runtime::RuntimeError;
 
 /// Re-exported so embedders can construct the default behavior executor — an
@@ -64,6 +82,7 @@ use arora_simple_data_store::SimpleDataStore;
 use arora_types::call::{Call, CallBridge, CallError, CallResult};
 use arora_types::data::{DataStore, Subscription};
 use arora_types::module::low::{self, Header};
+use arora_types::record::module::frozen::ExportKind;
 use futures::channel::{mpsc, oneshot};
 use futures::stream::{self, Fuse, SelectAll};
 use futures::StreamExt;
@@ -376,7 +395,10 @@ impl AroraBuilder {
     /// instead of the standard pick (terminal UI on an interactive terminal,
     /// headless otherwise) — the seam for an application that brings its own
     /// UI, or for the terminal UI extended with application commands
-    /// ([`tui::commands_frontend`]).
+    /// ([`tui::commands_frontend`]). A binary that needs the front end — and
+    /// the log sink it installs — before `run`, say to log what it loads,
+    /// takes the standard pick itself from [`standard_frontend`] and injects
+    /// it here.
     #[cfg(feature = "native")]
     pub fn with_frontend(mut self, frontend: operator::Frontend) -> Self {
         self.frontend = Some(frontend);
@@ -408,7 +430,7 @@ impl AroraBuilder {
         // sink, so everything after (including bridge resolution) is captured.
         let frontend = match self.frontend.take() {
             Some(frontend) => frontend,
-            None => run::select_frontend(),
+            None => run::standard_frontend(),
         };
         if self.bridges.is_empty() {
             #[cfg(feature = "studio-bridge")]
@@ -444,8 +466,21 @@ impl AroraBuilder {
         // the method index, so `DescribeMethods` lists them — a guest header
         // carries no type versions, so a non-primitive signature (which needs a
         // registry to pin versions) dispatches but stays undiscoverable.
+        //
+        // One module id, one module: every source of guest modules (an
+        // embedder's `with_module`, the device directory, `--module`) converges
+        // here, and the engine answers an already-loaded id with Ok — which
+        // would dispatch the first and describe the last.
+        let mut guest_modules: HashMap<Uuid, String> = HashMap::new();
         for (header, executable) in self.modules {
             let module_id = header.id;
+            let module_name = header.name.clone();
+            if let Some(first) = guest_modules.insert(module_id, module_name.clone()) {
+                anyhow::bail!(
+                    "guest modules '{first}' and '{module_name}' both have id {module_id}: a \
+                     device loads one module per id"
+                );
+            }
             for export in &header.exports {
                 let low::ExportSymbol::Function(function) = export;
                 match module_discovery::guest_function_signature(function) {
@@ -469,8 +504,13 @@ impl AroraBuilder {
                     ),
                 }
             }
-            load_module_from_parts(&mut engine, header, executable)
-                .map_err(|e| anyhow::anyhow!("failed to load module: {e}"))?;
+            let loaded = load_module_from_parts(&mut engine, header, executable).map_err(|e| {
+                anyhow::anyhow!("failed to load module '{module_name}' ({module_id}): {e}")
+            })?;
+            log::info!(
+                "loaded module '{module_name}' ({module_id}): {} function(s)",
+                loaded.function_ids.len()
+            );
         }
 
         // Register each host-side module so its functions dispatch through the
@@ -490,6 +530,50 @@ impl AroraBuilder {
                 );
             }
             engine.register_module(module.id(), Box::new(module));
+        }
+
+        // The methods the behavior interpreter implements itself join the
+        // index under its module: a remote spawns one through that module's
+        // `SPAWN`, like any task run. A method has one implementation, so one
+        // a module describes too fails the build, as does one reusing an id of
+        // the interpreter module's own functions.
+        let interpreter_methods = self
+            .interpreter
+            .as_ref()
+            .map(|interpreter| interpreter.described_methods())
+            .unwrap_or_default();
+        let own = [
+            interpreter_module::LOAD,
+            interpreter_module::EDIT,
+            interpreter_module::SPAWN,
+            interpreter_module::HALT,
+        ];
+        for (function_id, export) in &interpreter_methods {
+            if let Some(described) = functions.get(function_id) {
+                anyhow::bail!(
+                    "function {function_id} ('{}') is described by module {} and by the behavior \
+                     interpreter",
+                    export.name,
+                    described.module_id
+                );
+            }
+            if own.contains(function_id) {
+                anyhow::bail!(
+                    "the behavior interpreter describes '{}' under the id of one of the \
+                     interpreter module's own functions ({function_id})",
+                    export.name
+                );
+            }
+            let ExportKind::Function(function) = &export.kind;
+            functions.insert(
+                *function_id,
+                ModuleFunction {
+                    module_id: interpreter_module::ID,
+                    function_id: *function_id,
+                    function_name: export.name.clone(),
+                    function: function.clone(),
+                },
+            );
         }
 
         let store = self
@@ -580,6 +664,22 @@ impl AroraBuilder {
                         .map_err(|message| CallError::Guest { message })?;
                     runtime::with_interpreter(&cell, |interpreter| interpreter.halt(task))
                 }
+            });
+        // A method the interpreter implements is a task run, which a direct
+        // call has no run to host: the call fails, saying how to reach it.
+        let module = interpreter_methods
+            .into_iter()
+            .fold(module, |module, (function_id, export)| {
+                let message = format!(
+                    "'{}' is a task run the behavior interpreter implements: spawn it through \
+                     the interpreter module",
+                    export.name
+                );
+                module.function(function_id, move |_call| {
+                    Err(CallError::Guest {
+                        message: message.clone(),
+                    })
+                })
             })
             .build();
         engine.register_module(module.id(), Box::new(module));
@@ -647,17 +747,19 @@ mod module_loading_tests {
     use arora_types::call::{Call, CallBridge};
     use arora_types::value::Value;
 
-    const HEADER_YAML: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../modules/test-rust-wasm/src/arora_generated/module.yaml"
-    ));
     const WASM: &[u8] = include_bytes!(env!("CARGO_CDYLIB_FILE_TEST_RUST_WASM_test_rust_wasm"));
 
-    // Function id from modules/test-rust-wasm/module.yaml.
+    // Function id, as the guest's Rust declaration pins it.
     const SUCCEED: &str = "00cd31a8-2cf4-48e6-a957-69a55de90424"; // () -> bool
 
+    /// The guest's header, from its declaration — what an export step writes
+    /// as a `module.yaml`, here handed straight to the engine.
     fn test_module_header() -> Header {
-        serde_yaml::from_str(HEADER_YAML).expect("parse test-rust-wasm header yaml")
+        test_rust_wasm::test_rust_wasm::header(arora_types::module::low::Executor {
+            name: "wasm".to_string(),
+            min_version: None,
+            max_version: None,
+        })
     }
 
     /// `with_module` loads the guest executable into the engine, and its
@@ -914,17 +1016,40 @@ mod module_loading_tests {
             .expect("the default device builds with no modules loaded");
     }
 
-    /// A module whose executable cannot load fails the whole build, rather than
-    /// silently yielding a device with a broken module.
+    /// Two guest modules with one id fail the build, naming both: the engine
+    /// would load the first and the method index describe the last.
+    #[test]
+    fn two_guest_modules_with_one_id_fail_the_build() {
+        let first = test_module_header();
+        let mut second = test_module_header();
+        second.name = "test-rust-wasm-again".to_string();
+        let error = Arora::builder()
+            .with_module(first, WASM.to_vec())
+            .with_module(second, WASM.to_vec())
+            .build()
+            .err()
+            .expect("one id, two modules is refused");
+        assert!(
+            error
+                .to_string()
+                .contains("guest modules 'test-rust-wasm' and 'test-rust-wasm-again' both have id"),
+            "{error}"
+        );
+    }
+
+    /// A module whose executable cannot load fails the whole build, naming the
+    /// module, rather than silently yielding a device with a broken module.
     #[test]
     fn a_module_that_fails_to_load_fails_the_build() {
         let header = test_module_header();
-        let result = Arora::builder()
+        let error = Arora::builder()
             .with_module(header, vec![0xDE, 0xAD, 0xBE, 0xEF]) // not a valid wasm binary
-            .build();
+            .build()
+            .err()
+            .expect("build must fail when a module's executable cannot load");
         assert!(
-            result.is_err(),
-            "build must fail when a module's executable cannot load"
+            error.to_string().contains("module 'test-rust-wasm'"),
+            "{error}"
         );
     }
 }
@@ -935,7 +1060,8 @@ mod module_loading_tests {
 #[cfg(test)]
 mod host_module_tests {
     use super::*;
-    use arora_types::call::{Call, CallBridge};
+    use arora_types::call::Call;
+    use arora_types::record::module::frozen;
     use arora_types::value::Value;
 
     /// `with_host_module` registers a host-side module built from
@@ -1032,5 +1158,92 @@ mod host_module_tests {
         assert_eq!(entry.function_name, "look_at");
         assert_eq!(entry.function, signature);
         assert!(arora.function_index.get(&undescribed).is_none());
+    }
+
+    /// An interpreter hosting `look_at` as a task run of its own.
+    struct Describing;
+
+    const LOOK_AT: Uuid = Uuid::from_u128(0x6c6f6f6b);
+
+    impl BehaviorInterpreter for Describing {
+        fn tick(
+            &mut self,
+            _ctx: &mut arora_behavior::BehaviorContext,
+        ) -> Result<arora_behavior::BehaviorStatus, arora_behavior::BehaviorError> {
+            Ok(arora_behavior::BehaviorStatus::Running)
+        }
+
+        fn described_methods(&self) -> HashMap<Uuid, frozen::Export> {
+            HashMap::from([(
+                LOOK_AT,
+                frozen::Export {
+                    name: "look_at".to_string(),
+                    kind: frozen::ExportKind::Function(unit_signature()),
+                },
+            )])
+        }
+    }
+
+    fn unit_signature() -> frozen::Function {
+        frozen::Function {
+            parameters: HashMap::new(),
+            parameter_ordering: Vec::new(),
+            return_ty: arora_types::record::ty::FrozenTy::from(
+                arora_types::record::ty::PrimitiveKind::Unit,
+            ),
+        }
+    }
+
+    /// A method the interpreter describes joins the method index under the
+    /// interpreter module, and a direct call to it says to spawn it.
+    #[test]
+    fn the_interpreter_s_methods_join_the_method_index() {
+        let mut arora = Arora::builder()
+            .with_behavior_interpreter(Box::new(Describing))
+            .build()
+            .expect("build a device whose interpreter describes a method");
+
+        let entry = arora
+            .function_index
+            .get(&LOOK_AT)
+            .expect("the interpreter's method is indexed");
+        assert_eq!(entry.module_id, interpreter_module::ID);
+        assert_eq!(entry.function_name, "look_at");
+        assert_eq!(entry.function, unit_signature());
+
+        let error = arora
+            .call(Call {
+                module_id: Some(interpreter_module::ID),
+                id: LOOK_AT,
+                args: Vec::new(),
+            })
+            .expect_err("a task run is not called directly");
+        assert!(
+            error
+                .to_string()
+                .contains("spawn it through the interpreter module"),
+            "{error}"
+        );
+    }
+
+    /// A method has one implementation: a module and the interpreter both
+    /// describing one function id fail the build.
+    #[test]
+    fn a_method_described_by_a_module_and_the_interpreter_fails_the_build() {
+        let module = ModuleBuilder::new(Uuid::from_u128(0x6761))
+            .described_function(LOOK_AT, "look_at", unit_signature(), |_call| {
+                Ok(CallResult {
+                    ret: Value::Unit,
+                    mutated: Vec::new(),
+                })
+            })
+            .build();
+        let error = Arora::builder()
+            .with_host_module(module)
+            .with_behavior_interpreter(Box::new(Describing))
+            .build()
+            .err()
+            .expect("the build is refused");
+        assert!(error.to_string().contains("described by module"), "{error}");
     }
 }

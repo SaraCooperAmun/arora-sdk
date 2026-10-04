@@ -4,6 +4,38 @@ All notable changes to `arora-engine`. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [5.1.0] - 2026-09-28
+
+### Added
+
+- `HostModule::from_exports(id, exports)`: the host module serving declared
+  functions under a module id of the caller's choosing, such as the
+  implementation of an `arora-module` contract. `HostModule::of` is
+  `from_exports` over a declared module's own id and exports.
+
+## [5.0.0] - 2026-09-25
+
+### Changed
+
+- **Breaking:** depends on arora-types 3 and arora-buffers 3.
+
+## [4.2.1] - 2026-09-25
+
+### Fixed
+
+- `NativeExecutor` reads a result's 4-byte size prefix little-endian, as the
+  buffer writer produces it and every other executor reads it. The result
+  slice it returns now spans the result instead of a byte-swapped length.
+
+## [4.2.0] - 2026-09-24
+
+### Added
+
+- `HostModule::of::<M: AroraModule>()`: the host module a Rust declaration
+  describes — every export attached under its own id with its frozen
+  signature, so calls match arguments by parameter id and method
+  introspection lists the functions.
+
 ## [4.1.0] - 2026-07-29
 
 ### Added

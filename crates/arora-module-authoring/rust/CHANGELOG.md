@@ -4,6 +4,26 @@ All notable changes to `arora-module-rust`. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] - 2026-09-25
+
+### Added
+
+- Optional types: an optional parameter, return or structure field generates
+  as `Option<T>`, travels as the buffers' optional framing (byte-identical to
+  `serde_uuid`'s `Value::Option`) and converts to and from `Value::Option`. An
+  absent optional argument or structure field is `None`; a present one is read
+  framed or as its bare element.
+
+### Changed
+
+- **Breaking:** depends on arora-types 3, arora-module-core 2 and
+  arora-registry 2.
+
+### Fixed
+
+- The generated export and import shims read a size-prefixed buffer as the
+  size its prefix states. They read 4 bytes past its end.
+
 ## [1.0.0] - 2026-07-20
 
 ### Breaking

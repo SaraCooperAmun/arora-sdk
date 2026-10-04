@@ -22,6 +22,8 @@ use arora_bridge::{Bridge, BridgeOp, Inbound};
 use arora_bridge_ros2::conversions::topic_name;
 use arora_bridge_ros2::msg_types::{self, MessageType};
 use arora_bridge_ros2::{Ros2Bridge, Ros2BridgeConfig, Type, Value};
+use arora_types::call::CallResult;
+use arora_types::data::KeyMeta;
 use futures::StreamExt;
 use rand::RngExt;
 use ros2_client::{
@@ -63,10 +65,42 @@ async fn inbound_topic_becomes_update_command() {
     let domain_id = random_domain_id();
     let namespace = format!("test_in_{domain_id}");
 
-    let config =
-        Ros2BridgeConfig::new(&namespace, domain_id).with_input("face/mouth/open", Type::F64);
-    let mut bridge = Ros2Bridge::new(config).await;
+    let mut bridge = Ros2Bridge::new(Ros2BridgeConfig::new(&namespace, domain_id)).await;
     let mut inbound = bridge.take_inbound();
+
+    // The device: it opened `face/mouth/open` to remote writers, and hands every
+    // Update to the test. It answers concurrently, because the bridge asks for
+    // the device's inputs before it subscribes them — the publisher below waits
+    // on that subscription.
+    let (updates_tx, mut updates) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(event) = inbound.next().await {
+            let Inbound::Command(cmd) = event else {
+                continue; // DataRequested and other non-command signals
+            };
+            match &cmd.op {
+                BridgeOp::ListKeys { .. } => {
+                    let inputs = vec![(
+                        "face/mouth/open".to_string(),
+                        KeyMeta::new().editable().of_type(Type::F64),
+                    )];
+                    cmd.reply(
+                        arora_types::value_serde::to_value(&inputs)
+                            .map(|ret| CallResult {
+                                ret,
+                                mutated: Vec::new(),
+                            })
+                            .map_err(|e| e.to_string()),
+                    );
+                }
+                BridgeOp::Update(change) => {
+                    let _ = updates_tx.send(change.clone());
+                }
+                // DescribeMethods and the rest: this device describes none.
+                _ => {}
+            }
+        }
+    });
 
     let (_ctx, mut pub_node) = create_test_node(domain_id, &format!("pub_{domain_id}"));
     let topic = Name::parse(&topic_name(&namespace, "face/mouth/open")).expect("valid topic name");
@@ -96,27 +130,10 @@ async fn inbound_topic_becomes_update_command() {
         }
     });
 
-    // Await the Update on the inbound stream. The stream also carries the
-    // bridge's startup `DescribeMethods` command (from service discovery) and
-    // the initial `DataRequested(true)` signal, in a timing-dependent order — so
-    // skip everything that is not the Update we published, rather than assuming
-    // the Update is the first command to arrive.
-    let change = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            match inbound.next().await {
-                Some(Inbound::Command(cmd)) => {
-                    if let BridgeOp::Update(change) = cmd.op {
-                        break change;
-                    }
-                    // A non-Update command (e.g. DescribeMethods) — keep waiting.
-                }
-                Some(_) => {} // DataRequested and other non-command signals
-                None => panic!("the inbound stream ended before an Update arrived"),
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for an Update command");
+    let change = tokio::time::timeout(Duration::from_secs(10), updates.recv())
+        .await
+        .expect("timed out waiting for an Update command")
+        .expect("the device task stopped before an Update arrived");
 
     assert_eq!(
         change.set.get("face/mouth/open"),
@@ -233,9 +250,10 @@ async fn a_typed_hri_expression_publisher_lands_the_device_key() {
 }
 /// Enabling the `ros4hri` exposure profile is all the wiring a face device
 /// needs (ARORA-86): a typed publisher on an absolute incumbent topic — here
-/// the PAL expression alias and the IIIA look_at alias — fans out onto the
-/// `standard/ros4hri/*` keys the face standard reads, fields routed by name
-/// and the gaze point coerced to the store's vec3 form.
+/// the PAL expression alias, the IIIA look_at alias, and both shapes a TTS
+/// node streams a viseme in — fans out onto the `standard/ros4hri/*` keys the
+/// face standard reads, fields routed by name, the gaze point coerced to the
+/// store's vec3 form, and the sequence indexed at its first element.
 #[tokio::test]
 #[serial]
 #[cfg_attr(
@@ -278,6 +296,26 @@ async fn the_ros4hri_profile_fans_typed_topics_onto_face_keys() {
     let gaze_publisher = pub_node
         .create_publisher::<geometry_msgs::PointStamped>(&gaze_topic, None)
         .expect("create look_at publisher");
+    let viseme_topic = pub_node
+        .create_topic(
+            &Name::parse("/tts/viseme").expect("valid topic name"),
+            ros2_client::MessageTypeName::new("hri_msgs", "Viseme"),
+            &DEFAULT_PUBLISHER_QOS,
+        )
+        .expect("create viseme topic");
+    let viseme_publisher = pub_node
+        .create_publisher::<hri_msgs::Viseme>(&viseme_topic, None)
+        .expect("create viseme publisher");
+    let visemes_topic = pub_node
+        .create_topic(
+            &Name::parse("/tts/visemes").expect("valid topic name"),
+            ros2_client::MessageTypeName::new("hri_msgs", "Visemes"),
+            &DEFAULT_PUBLISHER_QOS,
+        )
+        .expect("create visemes topic");
+    let visemes_publisher = pub_node
+        .create_publisher::<hri_msgs::Visemes>(&visemes_topic, None)
+        .expect("create visemes publisher");
     tokio::time::timeout(
         Duration::from_secs(30),
         expr_publisher.wait_for_subscription(&pub_node),
@@ -290,6 +328,18 @@ async fn the_ros4hri_profile_fans_typed_topics_onto_face_keys() {
     )
     .await
     .expect("timed out waiting for the bridge to discover the look_at publisher");
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        viseme_publisher.wait_for_subscription(&pub_node),
+    )
+    .await
+    .expect("timed out waiting for the bridge to discover the viseme publisher");
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        visemes_publisher.wait_for_subscription(&pub_node),
+    )
+    .await
+    .expect("timed out waiting for the bridge to discover the visemes publisher");
 
     tokio::spawn(async move {
         loop {
@@ -318,16 +368,46 @@ async fn the_ros4hri_profile_fans_typed_topics_onto_face_keys() {
                     },
                 })
                 .await;
+            // Distinct shapes, so each change says which topic it came from.
+            let _ = viseme_publisher
+                .async_publish(hri_msgs::Viseme {
+                    value: hri_msgs::Viseme::PP,
+                    time: 0.0,
+                    duration: 0.1,
+                })
+                .await;
+            let _ = visemes_publisher
+                .async_publish(hri_msgs::Visemes {
+                    visemes: vec![
+                        hri_msgs::Viseme {
+                            value: hri_msgs::Viseme::OU,
+                            time: 0.2,
+                            duration: 0.1,
+                        },
+                        hri_msgs::Viseme {
+                            value: hri_msgs::Viseme::AA,
+                            time: 0.3,
+                            duration: 0.1,
+                        },
+                    ],
+                })
+                .await;
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     });
 
-    // One expression message fans out atomically; the look_at lands on its
-    // own change. Collect until both surfaces arrived.
+    // One expression message fans out atomically; the look_at and each viseme
+    // land on their own change. Collect until every surface arrived.
     let mut expression_change = None;
     let mut gaze_change = None;
+    let mut viseme = None;
+    let mut sequence_viseme = None;
     tokio::time::timeout(Duration::from_secs(10), async {
-        while expression_change.is_none() || gaze_change.is_none() {
+        while expression_change.is_none()
+            || gaze_change.is_none()
+            || viseme.is_none()
+            || sequence_viseme.is_none()
+        {
             match inbound.next().await {
                 Some(Inbound::Command(cmd)) => {
                     if let BridgeOp::Update(change) = cmd.op {
@@ -335,11 +415,19 @@ async fn the_ros4hri_profile_fans_typed_topics_onto_face_keys() {
                             expression_change = Some(change);
                         } else if change.set.contains_key("standard/ros4hri/gaze/target") {
                             gaze_change = Some(change);
+                        } else if let Some(Some(shape)) =
+                            change.set.get("standard/ros4hri/viseme").cloned()
+                        {
+                            if shape == Value::U8(hri_msgs::Viseme::PP) {
+                                viseme = Some(shape);
+                            } else {
+                                sequence_viseme = Some(shape);
+                            }
                         }
                     }
                 }
                 Some(_) => {}
-                None => panic!("the inbound stream ended before both surfaces arrived"),
+                None => panic!("the inbound stream ended before every surface arrived"),
             }
         }
     })
@@ -369,6 +457,10 @@ async fn the_ros4hri_profile_fans_typed_topics_onto_face_keys() {
         gaze.set.get("standard/ros4hri/gaze/frame"),
         Some(&Some(Value::String("sellion_link".into()))),
     );
+
+    // Both shapes reach the one key, the sequence at its first element.
+    assert_eq!(viseme, Some(Value::U8(hri_msgs::Viseme::PP)));
+    assert_eq!(sequence_viseme, Some(Value::U8(hri_msgs::Viseme::OU)));
 }
 
 /// `try_send` publishes a changed key to its topic, where a separate node
@@ -443,6 +535,78 @@ async fn send_data_reaches_topic_subscriber() {
         .expect("timed out waiting for the published value")
         .expect("subscription take failed");
     assert!((msg.data - 0.42).abs() < f64::EPSILON, "got {}", msg.data);
+}
+
+/// The ROS4HRI preset's speech surface, live: the device writes the speech
+/// state key and a `std_msgs/String` subscriber on `/robot_face/speech` reads
+/// the utterance — the key composed into the message's `data` field by the
+/// outbound route, on the absolute topic the profile names.
+#[tokio::test]
+#[serial]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "DDS multicast SPDP discovery is unreliable on macOS loopback (rustdds 0.11 \
+              has no unicast-peer/interface config); these run on Linux CI. To run locally, \
+              ensure an active multicast-capable interface and use `--ignored`."
+)]
+async fn the_ros4hri_profile_publishes_the_speech_text_as_a_string_topic() {
+    let _ = env_logger::try_init();
+    let domain_id = random_domain_id();
+    let namespace = format!("test_speech_{domain_id}");
+
+    let mut bridge = Ros2Bridge::new(
+        Ros2BridgeConfig::new(&namespace, domain_id)
+            .with_profile(arora_bridge_ros2::ExposureProfile::ros4hri()),
+    )
+    .await;
+    // Drain the inbound stream so the startup discovery resolves and the
+    // bridge proceeds to publish (see `send_data_reaches_topic_subscriber`).
+    let mut inbound = bridge.take_inbound();
+    tokio::spawn(async move { while inbound.next().await.is_some() {} });
+
+    let (_ctx, mut sub_node) = create_test_node(domain_id, &format!("subtitles_{domain_id}"));
+    let topic = Name::parse("/robot_face/speech").expect("valid topic name");
+    // The profile publishes state as sensor data (best-effort); the reader
+    // asks for the same, as a subtitle node would.
+    let sub_topic = sub_node
+        .create_topic(
+            &topic,
+            msg_types::String::message_type_name(),
+            &DEFAULT_SUBSCRIPTION_QOS,
+        )
+        .expect("create topic");
+    let subscription = sub_node
+        .create_subscription::<msg_types::String>(&sub_topic, None)
+        .expect("create subscription");
+
+    let publisher = async {
+        loop {
+            bridge.try_send(&arora_types::data::StateChange::set(
+                "standard/ros4hri/speech/text",
+                Value::String("hello there".into()),
+            ));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::pin!(publisher);
+
+    let received = tokio::select! {
+        _ = &mut publisher => unreachable!("publisher loop never returns"),
+        result = async {
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                subscription.wait_for_publisher(&sub_node),
+            )
+            .await
+            .expect("timed out waiting for the subscriber to discover the bridge publisher");
+            tokio::time::timeout(Duration::from_secs(10), subscription.async_take()).await
+        } => result,
+    };
+
+    let (msg, _info) = received
+        .expect("timed out waiting for the published utterance")
+        .expect("subscription take failed");
+    assert_eq!(msg.data, "hello there");
 }
 
 // =============================================================================
@@ -660,6 +824,14 @@ async fn a_look_at_action_runs_the_full_lifecycle_over_dds() {
                         mutated: Vec::new(),
                     }));
                 }
+                BridgeOp::ListKeys { .. } => {
+                    // This device opens no inputs: its actions are its whole surface.
+                    let inputs: Vec<(String, KeyMeta)> = Vec::new();
+                    cmd.reply(Ok(CallResult {
+                        ret: value_serde::to_value(&inputs).expect("keys encode"),
+                        mutated: Vec::new(),
+                    }));
+                }
                 other => panic!("unexpected runtime command: {other:?}"),
             }
         }
@@ -671,8 +843,10 @@ async fn a_look_at_action_runs_the_full_lifecycle_over_dds() {
         let (_ctx, mut node) = create_test_node(domain_id, "action_client");
         let action_type = ros2_client::ActionTypeName::new("arora", "look_at");
         let action_name = Name::parse("/robot/actions/look_at").expect("valid action name");
-        // The reliable service profile ros2-client's own action examples use —
-        // the best-effort DEFAULT_SUBSCRIPTION_QOS drops service requests.
+        // The service profile a native rclcpp/rclpy action client runs
+        // (`rmw_qos_profile_services_default`): reliable — the best-effort
+        // DEFAULT_SUBSCRIPTION_QOS drops service requests — and volatile, so
+        // this client matches the server exactly as a native one would.
         let service_qos = {
             use ros2_client::ros2::{policy, QosPolicyBuilder};
             QosPolicyBuilder::new()
@@ -680,7 +854,7 @@ async fn a_look_at_action_runs_the_full_lifecycle_over_dds() {
                     max_blocking_time: ros2_client::ros2::Duration::from_millis(100),
                 })
                 .history(policy::History::KeepLast { depth: 4 })
-                .durability(policy::Durability::TransientLocal)
+                .durability(policy::Durability::Volatile)
                 .build()
         };
         let qos = ros2_client::action::ActionClientQosPolicies {
@@ -1043,6 +1217,14 @@ async fn the_bound_look_at_skill_serves_the_standard_contract() {
                         mutated: Vec::new(),
                     }));
                 }
+                BridgeOp::ListKeys { .. } => {
+                    // This device opens no inputs: its actions are its whole surface.
+                    let inputs: Vec<(String, KeyMeta)> = Vec::new();
+                    cmd.reply(Ok(CallResult {
+                        ret: value_serde::to_value(&inputs).expect("keys encode"),
+                        mutated: Vec::new(),
+                    }));
+                }
                 other => panic!("unexpected runtime command: {other:?}"),
             }
         }
@@ -1060,7 +1242,7 @@ async fn the_bound_look_at_skill_serves_the_standard_contract() {
                     max_blocking_time: ros2_client::ros2::Duration::from_millis(100),
                 })
                 .history(policy::History::KeepLast { depth: 4 })
-                .durability(policy::Durability::TransientLocal)
+                .durability(policy::Durability::Volatile)
                 .build()
         };
         let qos = ros2_client::action::ActionClientQosPolicies {

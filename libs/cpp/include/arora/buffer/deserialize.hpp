@@ -100,6 +100,24 @@ namespace arora
         }
     }
 
+    // An optional value, flattened into the `std::optional` every generated
+    // parameter and field already is: `std::nullopt` when the value is absent.
+    // A present value arrives framed as an optional, or as its bare element;
+    // an element of another type is skipped, like any other mismatch.
+    template<typename E>
+    std::optional<E> deserialize_optional(arora_buffer_reader *const reader) noexcept {
+        if (arora_buffer_reader_peek_type(reader) != ARORA_BUFFER_TYPE_OPTION)
+        {
+          return deserialize<E>(reader);
+        }
+        arora_buffer_reader_next_type(reader);
+        if (!arora_buffer_reader_get_option_presence(reader))
+        {
+          return std::nullopt;
+        }
+        return deserialize<E>(reader);
+    }
+
     // Arrays
     template<typename T>
     const T *arora_buffer_reader_get_bulk(arora_buffer_reader *const reader, std::size_t count) {

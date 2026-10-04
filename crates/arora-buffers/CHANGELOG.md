@@ -4,6 +4,20 @@ All notable changes to `arora-buffers`. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-09-25
+
+### Added
+
+- The checked `Value` codec (`BuffersValueWriter` / `BuffersValueReader`)
+  frames optionals exactly as the `serde_uuid` codec does, so the two encode
+  an optional identically.
+- `BufferReader::peek_type` and its C ABI `arora_buffer_reader_peek_type`: the
+  next type tag, not consumed.
+
+### Changed
+
+- **Breaking:** depends on arora-types 3.
+
 ## [2.2.0] - 2026-07-29
 
 ### Fixed

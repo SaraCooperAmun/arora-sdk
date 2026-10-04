@@ -82,7 +82,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc as tmpsc;
 
-use crate::conversions::{extract_route, type_ref_id, xyz_structure};
+use crate::conversions::{coerce_scalar, default_value, extract_route, type_ref_id, xyz_structure};
 use crate::profile;
 use crate::services::type_ref_of;
 
@@ -244,11 +244,12 @@ pub(crate) fn resolve(
         if !is_action_shaped(signature) {
             continue;
         }
-        let send_goal_request_type = send_goal_request_type(signature);
-        if ros2_representable(&send_goal_request_type, registry.types()).is_err() {
+        let Some(send_goal_request_type) = send_goal_request_type(signature)
+            .filter(|request| ros2_representable(request, registry.types()).is_ok())
+        else {
             skipped.push(signature.name.clone());
             continue;
-        }
+        };
         actions.push(MethodAction {
             name: action_name(namespace, &signature.name),
             action_type: ActionTypeName::new("arora", &signature.name),
@@ -317,8 +318,7 @@ fn resolve_binding(
     }
 
     // Every routed field must resolve in the goal message and land on a
-    // parameter of a compatible type — and every parameter must be routed,
-    // or the spawn call would miss arguments.
+    // parameter of a compatible type.
     let function = &signature.function;
     let mut routes = Vec::new();
     for route in &binding.goal_routes {
@@ -348,10 +348,14 @@ fn resolve_binding(
     // A standard contract carries what the standard says, which need not be
     // every parameter the implementing method takes — ROS4HRI's `Say` goal has
     // no field for a voice, say. Such a parameter is left out of the spawn
-    // call and keeps the method's own default, announced here so the gap is
-    // legible in the log rather than surprising at the first goal. A route
-    // naming a field the goal lacks, or a parameter the method lacks, is still
-    // refused above: a typo is not an omission.
+    // call, and what an absent argument means is the implementation's: a
+    // method declared with arora-module reads an absent optional parameter as
+    // `None` and fails the call on an absent required one, while a task
+    // fragment may supply the argument itself. So the binding is served, not
+    // refused, and the gap is announced here to be legible in the log rather
+    // than surprising at the first goal. A route naming a field the goal
+    // lacks, or a parameter the method lacks, is still refused above: a typo
+    // is not an omission.
     let unrouted: Vec<&str> = function
         .parameter_ordering
         .iter()
@@ -361,11 +365,12 @@ fn resolve_binding(
         .collect();
     if !unrouted.is_empty() {
         log::info!(
-            "{}: the goal carries no {} — '{}' runs on its own default{}",
+            "{}: '{}' is spawned without {}, which the goal does not carry: \
+             an absent optional parameter is None, and the implementation \
+             supplies an absent required one or fails the run",
             binding.action,
-            unrouted.join(", "),
             binding.function,
-            if unrouted.len() > 1 { "s" } else { "" }
+            unrouted.join(", "),
         );
     }
 
@@ -419,7 +424,9 @@ fn resolve_field_ref(
 /// the field is an `x`/`y`/`z` structure and the parameter the vec3 array it
 /// coerces to (see [`extract_route`]).
 fn route_compatible(field: &TypeRef, parameter: &FrozenTy, registry: &Ros2Registry) -> bool {
-    let parameter_ref = type_ref_of(parameter);
+    let Some(parameter_ref) = type_ref_of(parameter) else {
+        return false;
+    };
     let same = match (field, &parameter_ref) {
         (TypeRef::Scalar { id: a }, TypeRef::Scalar { id: b })
         | (TypeRef::Array { id: a }, TypeRef::Array { id: b })
@@ -456,26 +463,30 @@ fn goal_id_low_field() -> (Uuid, low::StructureField) {
 /// parameter in declared order, each keeping the **parameter's id** — so a
 /// decoded request's non-goal-id fields are the spawn call's arguments
 /// verbatim.
-fn send_goal_request_type(signature: &MethodSignature) -> low::Type {
+fn send_goal_request_type(signature: &MethodSignature) -> Option<low::Type> {
     let function = &signature.function;
-    let params = function.parameter_ordering.iter().filter_map(|id| {
-        let parameter = function.parameters.get(id)?;
-        Some((
-            *id,
-            low::StructureField {
-                name: parameter.name.clone(),
-                type_ref: type_ref_of(&parameter.ty),
-            },
-        ))
-    });
+    let params = function
+        .parameter_ordering
+        .iter()
+        .filter_map(|id| Some((*id, function.parameters.get(id)?)))
+        .map(|(id, parameter)| {
+            Some((
+                id,
+                low::StructureField {
+                    name: parameter.name.clone(),
+                    type_ref: type_ref_of(&parameter.ty)?,
+                },
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
     let fields = std::iter::once(goal_id_low_field()).chain(params);
     let name = format!("{}_SendGoal_Request", signature.name);
-    low::Type {
+    Some(low::Type {
         id: gen_uuid_from_str(&name),
         name,
         description: String::new(),
         kind: low::TypeKind::Structure(low::Structure::from_fields(fields)),
-    }
+    })
 }
 
 /// The GetResult **response** type for a given terminal result value: `status:
@@ -567,8 +578,10 @@ pub(crate) fn feedback_message_value(goal_id: [u8; 16], feedback: Value) -> Valu
 
 /// The [`TypeRef`] a runtime [`Value`] carries on the wire — the lazy typing
 /// used for feedback and result messages, whose types are defined by what the
-/// run actually writes. `None` for values ROS 2 cannot carry as a field
-/// (structures, enumerations, unit, options, maps): the caller logs and skips.
+/// run actually writes. An optional of a scalar is the bounded sequence
+/// `T[<=1]` of its element. `None` for values ROS 2 cannot carry as a field
+/// (structures, enumerations, unit, maps, an optional of those or of an
+/// array): the caller logs and skips.
 pub(crate) fn type_ref_of_value(value: &Value) -> Option<TypeRef> {
     let scalar = |id: &Uuid| Some(TypeRef::Scalar { id: *id });
     let array = |id: &Uuid| Some(TypeRef::Array { id: *id });
@@ -597,6 +610,13 @@ pub(crate) fn type_ref_of_value(value: &Value) -> Option<TypeRef> {
         Value::ArrayF32(_) => array(&ty::F32_ID),
         Value::ArrayF64(_) => array(&ty::F64_ID),
         Value::ArrayString(_) => array(&ty::STRING_ID),
+        // An absent optional has no element to type it by, and needs none: an
+        // empty sequence's bytes are the same whatever its element type.
+        Value::Option(None) => Some(TypeRef::Option { id: *ty::U8_ID }),
+        Value::Option(Some(inner)) => match type_ref_of_value(inner)? {
+            TypeRef::Scalar { id } => Some(TypeRef::Option { id }),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -730,102 +750,6 @@ fn bound_goal_call_of(
     ))
 }
 
-/// A zero value of a registry message type: every field defaulted,
-/// recursively — what a bound result or feedback message starts from before
-/// the meaningful fields are set. `Err` on shapes ROS messages do not use.
-fn default_value(ty: &low::Type, registry: &ty::TypeRegistry) -> Result<Value, String> {
-    let low::TypeKind::Structure(structure) = &ty.kind else {
-        return Err(format!("'{}' is not a structure", ty.name));
-    };
-    let mut fields = Vec::with_capacity(structure.fields.len());
-    for (id, field) in &structure.fields {
-        let value = default_of_ref(&field.type_ref, registry)
-            .map_err(|e| format!("'{}': {e}", field.name))?;
-        fields.push(StructureField {
-            id: *id,
-            value: Box::new(value),
-        });
-    }
-    Ok(Value::Structure(Structure { id: ty.id, fields }))
-}
-
-/// The zero value behind one field reference.
-fn default_of_ref(type_ref: &TypeRef, registry: &ty::TypeRegistry) -> Result<Value, String> {
-    match type_ref {
-        TypeRef::Scalar { id } => default_scalar(id, registry),
-        TypeRef::Array { id } => default_array(id, 0),
-        TypeRef::FixedArray { id, len } => default_array(id, *len),
-        other => Err(format!("no default for a {other:?} field")),
-    }
-}
-
-/// The zero value of a scalar field: the primitive's zero, or a nested
-/// message's default.
-fn default_scalar(id: &Uuid, registry: &ty::TypeRegistry) -> Result<Value, String> {
-    let id = *id;
-    if id == *ty::BOOLEAN_ID {
-        Ok(Value::Boolean(false))
-    } else if id == *ty::U8_ID {
-        Ok(Value::U8(0))
-    } else if id == *ty::U16_ID {
-        Ok(Value::U16(0))
-    } else if id == *ty::U32_ID {
-        Ok(Value::U32(0))
-    } else if id == *ty::U64_ID {
-        Ok(Value::U64(0))
-    } else if id == *ty::I8_ID {
-        Ok(Value::I8(0))
-    } else if id == *ty::I16_ID {
-        Ok(Value::I16(0))
-    } else if id == *ty::I32_ID {
-        Ok(Value::I32(0))
-    } else if id == *ty::I64_ID {
-        Ok(Value::I64(0))
-    } else if id == *ty::F32_ID {
-        Ok(Value::F32(0.0))
-    } else if id == *ty::F64_ID {
-        Ok(Value::F64(0.0))
-    } else if id == *ty::STRING_ID {
-        Ok(Value::String(String::new()))
-    } else if let Some(nested) = registry.get(&id) {
-        default_value(nested, registry)
-    } else {
-        Err(format!("unregistered type {id}"))
-    }
-}
-
-/// The zero value of an array field (`len` zeros for a fixed array).
-fn default_array(id: &Uuid, len: usize) -> Result<Value, String> {
-    let id = *id;
-    if id == *ty::BOOLEAN_ID {
-        Ok(Value::ArrayBoolean(vec![false; len]))
-    } else if id == *ty::U8_ID {
-        Ok(Value::ArrayU8(vec![0; len]))
-    } else if id == *ty::U16_ID {
-        Ok(Value::ArrayU16(vec![0; len]))
-    } else if id == *ty::U32_ID {
-        Ok(Value::ArrayU32(vec![0; len]))
-    } else if id == *ty::U64_ID {
-        Ok(Value::ArrayU64(vec![0; len]))
-    } else if id == *ty::I8_ID {
-        Ok(Value::ArrayI8(vec![0; len]))
-    } else if id == *ty::I16_ID {
-        Ok(Value::ArrayI16(vec![0; len]))
-    } else if id == *ty::I32_ID {
-        Ok(Value::ArrayI32(vec![0; len]))
-    } else if id == *ty::I64_ID {
-        Ok(Value::ArrayI64(vec![0; len]))
-    } else if id == *ty::F32_ID {
-        Ok(Value::ArrayF32(vec![0.0; len]))
-    } else if id == *ty::F64_ID {
-        Ok(Value::ArrayF64(vec![0.0; len]))
-    } else if id == *ty::STRING_ID {
-        Ok(Value::ArrayString(vec![String::new(); len]))
-    } else {
-        Err(format!("no default for an array of type {id}"))
-    }
-}
-
 /// Set the first field named `name` (depth-first, declared order) in a
 /// message value to `new`, coercing scalars into the field's primitive.
 /// `false` when no such field takes the value.
@@ -867,59 +791,6 @@ fn set_named_field(
         }
     }
     false
-}
-
-/// `value` as the primitive `target` names, when the conversion preserves the
-/// kind (any integer feeds an integer field, either float a float field).
-fn coerce_scalar(value: &Value, target: &Uuid) -> Option<Value> {
-    let int = |value: &Value| -> Option<i128> {
-        Some(match value {
-            Value::U8(v) => *v as i128,
-            Value::U16(v) => *v as i128,
-            Value::U32(v) => *v as i128,
-            Value::U64(v) => *v as i128,
-            Value::I8(v) => *v as i128,
-            Value::I16(v) => *v as i128,
-            Value::I32(v) => *v as i128,
-            Value::I64(v) => *v as i128,
-            _ => return None,
-        })
-    };
-    let float = |value: &Value| -> Option<f64> {
-        Some(match value {
-            Value::F32(v) => *v as f64,
-            Value::F64(v) => *v,
-            _ => return None,
-        })
-    };
-    let target = *target;
-    if target == *ty::BOOLEAN_ID {
-        matches!(value, Value::Boolean(_)).then(|| value.clone())
-    } else if target == *ty::STRING_ID {
-        matches!(value, Value::String(_)).then(|| value.clone())
-    } else if target == *ty::U8_ID {
-        int(value).map(|v| Value::U8(v as u8))
-    } else if target == *ty::U16_ID {
-        int(value).map(|v| Value::U16(v as u16))
-    } else if target == *ty::U32_ID {
-        int(value).map(|v| Value::U32(v as u32))
-    } else if target == *ty::U64_ID {
-        int(value).map(|v| Value::U64(v as u64))
-    } else if target == *ty::I8_ID {
-        int(value).map(|v| Value::I8(v as i8))
-    } else if target == *ty::I16_ID {
-        int(value).map(|v| Value::I16(v as i16))
-    } else if target == *ty::I32_ID {
-        int(value).map(|v| Value::I32(v as i32))
-    } else if target == *ty::I64_ID {
-        int(value).map(|v| Value::I64(v as i64))
-    } else if target == *ty::F32_ID {
-        float(value).map(|v| Value::F32(v as f32))
-    } else if target == *ty::F64_ID {
-        float(value).map(Value::F64)
-    } else {
-        None
-    }
 }
 
 /// The `std_skills` errno of a terminal goal, when the run wrote none
@@ -1984,6 +1855,106 @@ mod tests {
         assert!(feedback_message_type(&opaque).is_none());
     }
 
+    /// `say(text, voice: Option<String>, viseme: &mut String) -> Status`: the
+    /// shape of Vizij's say contract.
+    fn say_signature() -> MethodSignature {
+        let mut parameters = HashMap::new();
+        let mut parameter_ordering = Vec::new();
+        let voice = FrozenTy::FrozenOption(arora_types::record::ty::FrozenOption {
+            element: Box::new(FrozenTy::from(PrimitiveKind::String)),
+        });
+        for (name, ty, mutable) in [
+            ("text", FrozenTy::from(PrimitiveKind::String), false),
+            ("voice", voice, false),
+            ("viseme", FrozenTy::from(PrimitiveKind::String), true),
+        ] {
+            let id = gen_uuid_from_str(name);
+            parameter_ordering.push(id);
+            parameters.insert(
+                id,
+                Parameter {
+                    name: name.to_string(),
+                    ty,
+                    mutable,
+                },
+            );
+        }
+        MethodSignature {
+            module_id: gen_uuid_from_str("speech-module"),
+            id: gen_uuid_from_str("say"),
+            name: "say".to_string(),
+            function: Function {
+                parameters,
+                parameter_ordering,
+                return_ty: status_return(),
+            },
+        }
+    }
+
+    /// An optional goal parameter travels as the bounded sequence `T[<=1]`, and
+    /// reaches the spawn call as `None` or `Some`.
+    #[test]
+    fn an_optional_goal_parameter_rides_as_a_bounded_sequence() {
+        let registry = arora_msgs_ros2::registry();
+        let (actions, skipped) = resolve("robot", &[say_signature()], &registry);
+        assert!(
+            skipped.is_empty(),
+            "an optional string goal is representable"
+        );
+        let action = &actions[0];
+
+        for voice in [Value::from(Some("alto".to_string())), Value::Option(None)] {
+            let field = |name: &str, value: Value| StructureField {
+                id: gen_uuid_from_str(name),
+                value: Box::new(value),
+            };
+            let request = Value::Structure(Structure {
+                id: action.send_goal_request_type.id,
+                fields: vec![
+                    StructureField {
+                        id: goal_id_field(),
+                        value: Box::new(Value::ArrayU8(vec![1; 16])),
+                    },
+                    field("text", Value::String("hello".into())),
+                    field("voice", voice.clone()),
+                    field("viseme", Value::String("sil".into())),
+                ],
+            });
+            let bytes = cdr::encode(&action.send_goal_request_type, registry.types(), &request)
+                .expect("encode SendGoal request");
+            let decoded = cdr::decode(&action.send_goal_request_type, registry.types(), &bytes)
+                .expect("decode SendGoal request");
+            let (_, call) = goal_call_of(action, decoded).expect("goal + call");
+            assert!(call.args.contains(&field("voice", voice)));
+        }
+    }
+
+    /// A result or feedback that is an optional of a scalar is typed lazily as
+    /// `T[<=1]`; an absent one needs no element type. An optional array has no
+    /// wire type.
+    #[test]
+    fn optional_results_and_feedback_type_lazily() {
+        let registry = arora_msgs_ros2::registry();
+        for result in [Value::from(Some(1.5f64)), Value::Option(None)] {
+            let ty = get_result_response_type(Some(&result)).expect("an optional f64 result");
+            let response = get_result_response_value(GoalStatusEnum::Succeeded, Some(result));
+            let bytes = cdr::encode(&ty, registry.types(), &response).expect("encode");
+            assert_eq!(
+                cdr::decode(&ty, registry.types(), &bytes).unwrap(),
+                response
+            );
+        }
+
+        let feedback = Value::from(Some(0.5f32));
+        let ty = feedback_message_type(&feedback).expect("an optional f32 feedback");
+        let message = feedback_message_value([3u8; 16], feedback);
+        let bytes = cdr::encode(&ty, registry.types(), &message).expect("encode");
+        assert_eq!(cdr::decode(&ty, registry.types(), &bytes).unwrap(), message);
+
+        let optional_array = Value::Option(Some(Box::new(Value::ArrayF64(vec![1.0]))));
+        assert!(feedback_message_type(&optional_array).is_none());
+    }
+
     // =========================================================================
     // The goal book.
     // =========================================================================
@@ -2309,9 +2280,9 @@ mod tests {
         assert!(none.is_empty());
         assert!(errors[0].contains("not a task run"), "{errors:?}");
 
-        // A parameter the goal does not route is served anyway, on the
-        // method's own default — the standard contract need not name every
-        // parameter the implementation takes.
+        // A parameter the goal does not route leaves the binding served and
+        // the parameter out of the spawn call — the standard contract need
+        // not name every parameter the implementation takes.
         let mut extra = bound_look_at_signature();
         let id = gen_uuid_from_str("speed");
         extra.function.parameter_ordering.push(id);
