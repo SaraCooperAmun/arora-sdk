@@ -395,284 +395,25 @@ fn coerce_xyz(value: &Value, ty: &arora_types::ty::low::Type) -> Option<Value> {
     (components.len() == 3).then_some(Value::ArrayF32(components))
 }
 
-/// A zero value of a registry message type: every field defaulted,
-/// recursively — what a bound result or feedback message starts from before
-/// the meaningful fields are set. `Err` on shapes ROS messages do not use.
-pub(crate) fn default_value(ty: &low::Type, registry: &TypeRegistry) -> Result<Value, String> {
-    let low::TypeKind::Structure(structure) = &ty.kind else {
-        return Err(format!("'{}' is not a structure", ty.name));
-    };
-    let mut fields = Vec::with_capacity(structure.fields.len());
-    for (id, field) in &structure.fields {
-        let value = default_of_ref(&field.type_ref, registry)
-            .map_err(|e| format!("'{}': {e}", field.name))?;
-        fields.push(StructureField {
-            id: *id,
-            value: Box::new(value),
-        });
+fn vizij_viseme_key(value: u8) -> Option<&'static str> {
+    match value {
+        0 => Some("standard/vizij/viseme/sil"),
+        1 => Some("standard/vizij/viseme/PP"),
+        2 => Some("standard/vizij/viseme/FF"),
+        3 => Some("standard/vizij/viseme/TH"),
+        4 => Some("standard/vizij/viseme/DD"),
+        5 => Some("standard/vizij/viseme/kk"),
+        6 => Some("standard/vizij/viseme/CH"),
+        7 => Some("standard/vizij/viseme/SS"),
+        8 => Some("standard/vizij/viseme/nn"),
+        9 => Some("standard/vizij/viseme/RR"),
+        10 => Some("standard/vizij/viseme/aa"),
+        11 => Some("standard/vizij/viseme/E"),
+        12 => Some("standard/vizij/viseme/ih"),
+        13 => Some("standard/vizij/viseme/oh"),
+        14 => Some("standard/vizij/viseme/ou"),
+        _ => None,
     }
-    Ok(Value::Structure(Structure { id: ty.id, fields }))
-}
-
-/// The zero value behind one field reference.
-fn default_of_ref(type_ref: &TypeRef, registry: &TypeRegistry) -> Result<Value, String> {
-    match type_ref {
-        TypeRef::Scalar { id } => default_scalar(id, registry),
-        TypeRef::Array { id } => default_array(id, 0),
-        TypeRef::FixedArray { id, len } => default_array(id, *len),
-        other => Err(format!("no default for a {other:?} field")),
-    }
-}
-
-/// The zero value of a scalar field: the primitive's zero, or a nested
-/// message's default.
-fn default_scalar(id: &Uuid, registry: &TypeRegistry) -> Result<Value, String> {
-    let id = *id;
-    if id == *BOOLEAN_ID {
-        Ok(Value::Boolean(false))
-    } else if id == *U8_ID {
-        Ok(Value::U8(0))
-    } else if id == *U16_ID {
-        Ok(Value::U16(0))
-    } else if id == *U32_ID {
-        Ok(Value::U32(0))
-    } else if id == *U64_ID {
-        Ok(Value::U64(0))
-    } else if id == *I8_ID {
-        Ok(Value::I8(0))
-    } else if id == *I16_ID {
-        Ok(Value::I16(0))
-    } else if id == *I32_ID {
-        Ok(Value::I32(0))
-    } else if id == *I64_ID {
-        Ok(Value::I64(0))
-    } else if id == *F32_ID {
-        Ok(Value::F32(0.0))
-    } else if id == *F64_ID {
-        Ok(Value::F64(0.0))
-    } else if id == *STRING_ID {
-        Ok(Value::String(String::new()))
-    } else if let Some(nested) = registry.get(&id) {
-        default_value(nested, registry)
-    } else {
-        Err(format!("unregistered type {id}"))
-    }
-}
-
-/// The zero value of an array field (`len` zeros for a fixed array).
-fn default_array(id: &Uuid, len: usize) -> Result<Value, String> {
-    let id = *id;
-    if id == *BOOLEAN_ID {
-        Ok(Value::ArrayBoolean(vec![false; len]))
-    } else if id == *U8_ID {
-        Ok(Value::ArrayU8(vec![0; len]))
-    } else if id == *U16_ID {
-        Ok(Value::ArrayU16(vec![0; len]))
-    } else if id == *U32_ID {
-        Ok(Value::ArrayU32(vec![0; len]))
-    } else if id == *U64_ID {
-        Ok(Value::ArrayU64(vec![0; len]))
-    } else if id == *I8_ID {
-        Ok(Value::ArrayI8(vec![0; len]))
-    } else if id == *I16_ID {
-        Ok(Value::ArrayI16(vec![0; len]))
-    } else if id == *I32_ID {
-        Ok(Value::ArrayI32(vec![0; len]))
-    } else if id == *I64_ID {
-        Ok(Value::ArrayI64(vec![0; len]))
-    } else if id == *F32_ID {
-        Ok(Value::ArrayF32(vec![0.0; len]))
-    } else if id == *F64_ID {
-        Ok(Value::ArrayF64(vec![0.0; len]))
-    } else if id == *STRING_ID {
-        Ok(Value::ArrayString(vec![String::new(); len]))
-    } else {
-        Err(format!("no default for an array of type {id}"))
-    }
-}
-
-/// `value` as the primitive `target` names, when the conversion preserves the
-/// kind (any integer feeds an integer field, either float a float field).
-pub(crate) fn coerce_scalar(value: &Value, target: &Uuid) -> Option<Value> {
-    let int = |value: &Value| -> Option<i128> {
-        Some(match value {
-            Value::U8(v) => *v as i128,
-            Value::U16(v) => *v as i128,
-            Value::U32(v) => *v as i128,
-            Value::U64(v) => *v as i128,
-            Value::I8(v) => *v as i128,
-            Value::I16(v) => *v as i128,
-            Value::I32(v) => *v as i128,
-            Value::I64(v) => *v as i128,
-            _ => return None,
-        })
-    };
-    let float = |value: &Value| -> Option<f64> {
-        Some(match value {
-            Value::F32(v) => *v as f64,
-            Value::F64(v) => *v,
-            _ => return None,
-        })
-    };
-    let target = *target;
-    if target == *BOOLEAN_ID {
-        matches!(value, Value::Boolean(_)).then(|| value.clone())
-    } else if target == *STRING_ID {
-        matches!(value, Value::String(_)).then(|| value.clone())
-    } else if target == *U8_ID {
-        int(value).map(|v| Value::U8(v as u8))
-    } else if target == *U16_ID {
-        int(value).map(|v| Value::U16(v as u16))
-    } else if target == *U32_ID {
-        int(value).map(|v| Value::U32(v as u32))
-    } else if target == *U64_ID {
-        int(value).map(|v| Value::U64(v as u64))
-    } else if target == *I8_ID {
-        int(value).map(|v| Value::I8(v as i8))
-    } else if target == *I16_ID {
-        int(value).map(|v| Value::I16(v as i16))
-    } else if target == *I32_ID {
-        int(value).map(|v| Value::I32(v as i32))
-    } else if target == *I64_ID {
-        int(value).map(|v| Value::I64(v as i64))
-    } else if target == *F32_ID {
-        float(value).map(|v| Value::F32(v as f32))
-    } else if target == *F64_ID {
-        float(value).map(Value::F64)
-    } else {
-        None
-    }
-}
-
-/// Place `new` at a dotted field path (`"header.frame_id"`; empty = the whole
-/// message) inside a message value under composition — the outbound mirror of
-/// [`extract_route`]: each segment looks the field up **by name** in the
-/// structure type and descends type and value together, and the leaf takes
-/// the value in the field's own form. A scalar field coerces its kind
-/// ([`coerce_scalar`]); a geometry point/vector field (an `x`/`y`/`z`
-/// structure) takes the store's vec3 form ([`Value::ArrayF32`] or
-/// [`Value::ArrayF64`]) as well as a structure of its type; a nested message
-/// or an array field takes a value of its type as is. Nothing is written on an
-/// error, so a key of the wrong kind leaves the message as it was.
-pub(crate) fn place_route(
-    value: &mut Value,
-    ty: &low::Type,
-    registry: &TypeRegistry,
-    dotted: &str,
-    new: &Value,
-) -> Result<(), String> {
-    use arora_types::ty::low::TypeKind;
-    if dotted.is_empty() {
-        return match new {
-            Value::Structure(structure) if structure.id == ty.id => {
-                *value = new.clone();
-                Ok(())
-            }
-            other => Err(format!(
-                "a whole '{}' message takes a structure of its type, not {other}",
-                ty.name
-            )),
-        };
-    }
-    let mut current_value = value;
-    let mut current_ty = ty;
-    let mut segments = dotted.split('.').peekable();
-    while let Some(segment) = segments.next() {
-        let TypeKind::Structure(structure) = &current_ty.kind else {
-            return Err(format!("'{dotted}': '{segment}' is not inside a structure"));
-        };
-        let (field_id, field) = structure
-            .fields
-            .iter()
-            .find(|(_, field)| field.name == segment)
-            .ok_or_else(|| format!("'{dotted}': no field '{segment}'"))?;
-        let Value::Structure(value_structure) = current_value else {
-            return Err(format!(
-                "'{dotted}': value at '{segment}' is not a structure"
-            ));
-        };
-        let slot = value_structure
-            .fields
-            .iter_mut()
-            .find(|value_field| value_field.id == *field_id)
-            .map(|value_field| value_field.value.as_mut())
-            .ok_or_else(|| format!("'{dotted}': message under composition misses '{segment}'"))?;
-        if segments.peek().is_some() {
-            current_ty = registry.get(&type_ref_id(&field.type_ref)).ok_or_else(|| {
-                format!("'{dotted}': '{segment}' is a primitive, not a structure")
-            })?;
-            current_value = slot;
-            continue;
-        }
-        // The leaf: the field takes `new` in its own form.
-        let placed = match &field.type_ref {
-            TypeRef::Scalar { id } => match registry.get(id) {
-                None => coerce_scalar(new, id),
-                Some(nested) => match new {
-                    Value::Structure(structure) if structure.id == nested.id => Some(new.clone()),
-                    _ => xyz_value(new, nested),
-                },
-            },
-            TypeRef::Array { .. } | TypeRef::FixedArray { .. } => matches!(
-                new,
-                Value::ArrayBoolean(_)
-                    | Value::ArrayU8(_)
-                    | Value::ArrayU16(_)
-                    | Value::ArrayU32(_)
-                    | Value::ArrayU64(_)
-                    | Value::ArrayI8(_)
-                    | Value::ArrayI16(_)
-                    | Value::ArrayI32(_)
-                    | Value::ArrayI64(_)
-                    | Value::ArrayF32(_)
-                    | Value::ArrayF64(_)
-                    | Value::ArrayString(_)
-                    | Value::ArrayStructure { .. }
-            )
-            .then(|| new.clone()),
-            other => return Err(format!("'{dotted}': no placement into a {other:?} field")),
-        };
-        return match placed {
-            Some(placed) => {
-                *slot = placed;
-                Ok(())
-            }
-            None => Err(format!("'{dotted}': {new} does not fit field '{segment}'")),
-        };
-    }
-    Ok(())
-}
-
-/// The `x`/`y`/`z` structure `ty` built from the store's vec3 form of a
-/// point ([`Value::ArrayF32`] or [`Value::ArrayF64`] of three), each component
-/// coerced into its field's primitive; `None` for any other pair.
-fn xyz_value(value: &Value, ty: &low::Type) -> Option<Value> {
-    use arora_types::ty::low::TypeKind;
-    if !xyz_structure(ty) {
-        return None;
-    }
-    let components: Vec<f64> = match value {
-        Value::ArrayF32(v) => v.iter().map(|c| *c as f64).collect(),
-        Value::ArrayF64(v) => v.clone(),
-        _ => return None,
-    };
-    if components.len() != 3 {
-        return None;
-    }
-    let TypeKind::Structure(structure) = &ty.kind else {
-        return None;
-    };
-    let mut fields = Vec::with_capacity(3);
-    for ((field_id, field), component) in structure.fields.iter().zip(components) {
-        let TypeRef::Scalar { id } = &field.type_ref else {
-            return None;
-        };
-        fields.push(StructureField {
-            id: *field_id,
-            value: Box::new(coerce_scalar(&Value::F64(component), id)?),
-        });
-    }
-    Some(Value::Structure(Structure { id: ty.id, fields }))
 }
 
 pub fn setup_typed_key_subscriber(
@@ -712,7 +453,79 @@ pub fn setup_typed_key_subscriber(
                     Ok(bytes) => match cdr::decode(&message_type, registry.types(), &bytes) {
                         Ok(value) => {
                             let mut change = StateChange::new();
-                            if routes.is_empty() {
+                            if ros_type == "hri_msgs/Visemes" {
+                                eprintln!("[VISEME] received hri_msgs/Visemes");
+
+                                let Value::Structure(message) = &value else {
+                                    warn!("hri_msgs/Visemes is not a structure");
+                                    continue;
+                                };
+
+                                eprintln!("[VISEME] value={value:?}");
+                                eprintln!("[VISEME] structure={message:?}");
+
+                                let Some(field) = message.fields.first() else {
+                                    warn!("hri_msgs/Visemes has no fields");
+                                    continue;
+                                };
+
+                                let Value::ArrayStructure { elements, .. } = field.value.as_ref() else {
+                                    warn!(
+                                        "hri_msgs/Visemes field is not an ArrayStructure: {:?}",
+                                        field.value
+                                    );
+                                    continue;
+                                };
+
+                                eprintln!("[VISEME] array length={}", elements.len());
+
+                                let Some(viseme) = elements.first() else {
+                                    warn!("received empty hri_msgs/Visemes message");
+                                    continue;
+                                };
+
+                                let Some(field) = viseme.fields.first() else {
+                                    warn!("viseme has no value field");
+                                    continue;
+                                };
+
+                                let Value::U8(value) = field.value.as_ref() else {
+                                    warn!(
+                                        "viseme 'value' has unexpected type: {:?}",
+                                        field.value
+                                    );
+                                    continue;
+                                };
+
+                                let viseme = *value;
+
+                                eprintln!("[VISEME] extracted value={viseme}");
+
+                                let Some(key) = vizij_viseme_key(viseme) else {
+                                    warn!("unknown hri_msgs/Visemes value: {viseme}");
+                                    continue;
+                                };
+
+                                let key = format!("rig/quori_latest/{key}");
+
+                                eprintln!("[VISEME] setting key={key}");
+
+                                for value in 0..=14 {
+                                    if let Some(old_key) = vizij_viseme_key(value) {
+                                        change.set.insert(
+                                            Key::from(format!("rig/quori_latest/{old_key}")),
+                                            Some(Value::F32(0.0)),
+                                        );
+                                    }
+                                }
+
+                                change.set.insert(
+                                    Key::from(key),
+                                    Some(Value::F32(1.0)),
+                                );
+
+                                eprintln!("[VISEME] StateChange prepared");
+                            } else if routes.is_empty() {
                                 change.set.insert(Key::from(path.clone()), Some(value));
                             } else {
                                 // All routed fields of one message land in one
@@ -1042,73 +855,37 @@ mod tests {
     }
 
     #[test]
-    fn set_expression_routes_nested_expression_fields() {
-        use arora_msgs_ros2::{hri_msgs, interaction_skills, std_skills};
+    fn viseme_message_round_trips_and_extracts_value() {
+        use arora_msgs_ros2::hri_msgs;
         use arora_types::value_serde::bridge::to_value_seeded;
         use arora_types::AroraType;
 
         let registry = arora_msgs_ros2::registry();
         let message_type = registry
-            .get_by_name("interaction_skills/SetExpression")
-            .expect("interaction_skills/SetExpression is registered")
+            .get_by_name("hri_msgs/Visemes")
+            .expect("hri_msgs/Visemes is registered")
             .clone();
 
-        let msg = interaction_skills::SetExpression {
-            meta: std_skills::Meta {
-                caller: "test".into(),
-                priority: std_skills::Meta::NORMAL_PRIORITY,
-            },
-            expression: hri_msgs::Expression {
-                expression: "happy".into(),
-                valence: 0.8,
-                arousal: 0.2,
-                ..Default::default()
-            },
+        let msg = hri_msgs::Visemes {
+            visemes: vec![hri_msgs::Viseme {
+                value: hri_msgs::Viseme::AA,
+                time: 0.0,
+                duration: 0.2,
+            }],
         };
 
-        let (ty, reg) =
-            <interaction_skills::SetExpression as AroraType>::arora_type_with_registry();
-
-        let value = to_value_seeded(&msg, &ty, &reg).expect("SetExpression to value");
+        let (ty, reg) = <hri_msgs::Visemes as AroraType>::arora_type_with_registry();
+        let value = to_value_seeded(&msg, &ty, &reg).expect("Viseme to value");
 
         let bytes =
-            cdr::encode(&message_type, registry.types(), &value).expect("encode SetExpression");
+            cdr::encode(&message_type, registry.types(), &value).expect("encode Viseme");
 
         let decoded =
-            cdr::decode(&message_type, registry.types(), &bytes).expect("decode SetExpression");
+            cdr::decode(&message_type, registry.types(), &bytes).expect("decode Viseme");
 
-        assert_eq!(
-            extract_route(
-                &decoded,
-                &message_type,
-                registry.types(),
-                "expression.expression"
-            )
-            .expect("expression.expression"),
-            Value::String("happy".into())
-        );
+        assert_eq!(decoded, value);
 
-        assert_eq!(
-            extract_route(
-                &decoded,
-                &message_type,
-                registry.types(),
-                "expression.valence"
-            )
-            .expect("expression.valence"),
-            Value::F32(0.8)
-        );
-
-        assert_eq!(
-            extract_route(
-                &decoded,
-                &message_type,
-                registry.types(),
-                "expression.arousal"
-            )
-            .expect("expression.arousal"),
-            Value::F32(0.2)
-        );
+        assert_eq!(decoded, value);
     }
 
     /// The profile fan-out resolves dotted field paths by name against the

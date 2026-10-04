@@ -208,3 +208,43 @@ being rejected — and answers with the standard Result message carrying the
 `ExposureProfile::coverage` reports which of the profile's keys and skill
 functions a device does not serve, so a deployment checks a face against its
 profile up front instead of discovering holes topic by topic.
+
+## ROS4HRI viseme streaming
+
+The face accepts streamed visemes on `/tts/viseme` using
+`hri_msgs/Visemes`. Each message contains one `Viseme` in the `visemes`
+array. The `value` field identifies the viseme.
+
+The bridge maps each ROS `Viseme.value` to the corresponding internal Vizij
+viseme key. Before activating the received viseme, the bridge resets the
+other viseme keys to `0.0`, allowing individual viseme messages to be
+streamed continuously.
+
+The `time` and `duration` fields are part of the ROS4HRI message interface,
+but the bridge currently uses only `value`. Timing is handled by the
+component producing the viseme stream.
+
+| Value | ROS viseme | Internal Vizij key |
+| ----: | ---------- | ------------------ |
+| `0`   | `SIL`      | `standard/vizij/viseme/sil` |
+| `1`   | `PP`       | `standard/vizij/viseme/PP` |
+| `2`   | `FF`       | `standard/vizij/viseme/FF` |
+| `3`   | `TH`       | `standard/vizij/viseme/TH` |
+| `4`   | `DD`       | `standard/vizij/viseme/DD` |
+| `5`   | `KK`       | `standard/vizij/viseme/kk` |
+| `6`   | `CH`       | `standard/vizij/viseme/CH` |
+| `7`   | `SS`       | `standard/vizij/viseme/SS` |
+| `8`   | `NN`       | `standard/vizij/viseme/nn` |
+| `9`   | `RR`       | `standard/vizij/viseme/RR` |
+| `10`  | `AA`       | `standard/vizij/viseme/aa` |
+| `11`  | `E`        | `standard/vizij/viseme/E` |
+| `12`  | `IH`       | `standard/vizij/viseme/ih` |
+| `13`  | `OH`       | `standard/vizij/viseme/oh` |
+| `14`  | `OU`       | `standard/vizij/viseme/ou` |
+
+### Testing
+
+Set the ROS 2 middleware:
+
+```bash
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp

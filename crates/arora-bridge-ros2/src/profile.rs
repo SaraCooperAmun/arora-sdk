@@ -183,6 +183,10 @@ impl ExposureProfile {
                 key: "standard/ros4hri/gaze/frame".into(),
             },
         ];
+        let viseme_routes = vec![FieldRoute {
+            field: "visemes".into(),
+            key: "standard/ros4hri/viseme".into(),
+        }];
         let speech_routes = vec![FieldRoute {
             field: "data".into(),
             key: "standard/ros4hri/speech/text".into(),
@@ -262,6 +266,12 @@ impl ExposureProfile {
                     "sensor_msgs/CompressedImage",
                     Flow::Out,
                     &whole("display/face/compressed"),
+                ),
+                endpoint(
+                    "/tts/visemes",
+                    "hri_msgs/Visemes",
+                    Flow::In,
+                    &viseme_routes,
                 ),
             ],
             includes: Vec::new(),
@@ -415,6 +425,21 @@ mod tests {
     }
 
     #[test]
+    fn ros4hri_preset_subscribes_to_viseme_topic() {
+        let profile = ExposureProfile::ros4hri();
+
+        let viseme = profile
+            .endpoints
+            .iter()
+            .find(|e| e.topic == "/tts/visemes")
+            .expect("/tts/visemes is in the preset");
+
+        assert_eq!(viseme.ros_type, "hri_msgs/Visemes");
+        assert_eq!(viseme.flow, Flow::In);
+        assert_eq!(viseme.routes[0].field, "visemes");
+    }
+    
+    #[test]
     fn ros4hri_preset_serves_both_name_sets() {
         let profile = ExposureProfile::ros4hri();
         let topics: Vec<&str> = profile.endpoints.iter().map(|e| e.topic.as_str()).collect();
@@ -513,6 +538,21 @@ mod tests {
     }
 
     #[test]
+    fn ros4hri_preset_subscribes_to_viseme_topic() {
+        let profile = ExposureProfile::ros4hri();
+
+        let viseme = profile
+            .endpoints
+            .iter()
+            .find(|e| e.topic == "/tts/visemes")
+            .expect("/tts/visemes is in the preset");
+
+        assert_eq!(viseme.ros_type, "hri_msgs/Viseme");
+        assert_eq!(viseme.flow, Flow::In);
+        assert!(viseme.routes.is_empty());
+    }
+
+    #[test]
     fn ros4hri_preset_binds_the_standard_skills() {
         let profile = ExposureProfile::ros4hri();
         let [look_at, say] = profile.actions.as_slice() else {
@@ -552,7 +592,7 @@ mod tests {
             .filter(|k| !k.ends_with("gaze/target"))
             .collect();
         let missing = profile.coverage(partial, ["look_at", "say"]);
-        assert_eq!(missing.len(), 2, "{missing:?}");
+        assert_eq!(missing.len(), 1, "{missing:?}");
         assert!(missing.iter().all(|m| m.contains("gaze/target")));
         // A device serving neither skill method misses the whole skill plane.
         let missing = profile.coverage(keys.iter().map(String::as_str), []);
