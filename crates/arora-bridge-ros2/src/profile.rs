@@ -97,7 +97,10 @@ pub struct ActionBinding {
     pub function: String,
     /// Goal fan-out onto the function's parameters: [`FieldRoute::field`] is
     /// the dotted path into the goal message, [`FieldRoute::key`] names the
-    /// parameter it becomes. Every parameter must be routed.
+    /// parameter it becomes. A parameter no route names is left out of the
+    /// spawn call, and what an absent argument means is the implementation's:
+    /// a method declared with arora-module reads an absent optional parameter
+    /// as `None`, and fails the call on an absent required one.
     pub goal_routes: Vec<FieldRoute>,
 }
 
@@ -119,7 +122,20 @@ impl ExposureProfile {
     ///   `standard/ros4hri/expression/*` keys the face standard reads;
     /// - `look_at` points (`geometry_msgs/PointStamped`) land as the gaze
     ///   target (a vec3) and frame;
-    /// - speech text (`std_msgs/String`) lands on the lipsync feed key;
+    /// - a streamed viseme lands as its ROS4HRI code on
+    ///   `standard/ros4hri/viseme`, from either shape a TTS node publishes it
+    ///   in: one `hri_msgs/Viseme` on `/tts/viseme`, or an `hri_msgs/Visemes`
+    ///   on `/tts/visemes`. Both carry the shape at the audio playhead, so
+    ///   the sequence's first viseme is the one that lands; a message holding
+    ///   a whole alignment is a timeline, and playing one out over time is a
+    ///   viseme player's work rather than a bridge's. This is how a face
+    ///   lipsyncs to speech synthesized elsewhere — a `/skill/say` run drives
+    ///   the lips from the run itself, never through this topic;
+    /// - the utterance being spoken publishes as `std_msgs/String` on
+    ///   `/robot_face/speech` from the speech state key
+    ///   `standard/ros4hri/speech/text` — what a say run is saying, empty at
+    ///   rest — so a subtitle or a transcript follows the voice. Text is not
+    ///   commanded through a topic: speaking is the `/skill/say` action;
     /// - the `/skill/look_at` **action** (`interaction_skills/LookAt`) spawns
     ///   the device's `look_at` task run, its goal routed onto the
     ///   `(policy, target, frame)` parameters — the skill plane, for gaze
@@ -171,10 +187,22 @@ impl ExposureProfile {
             field: "data".into(),
             key: "standard/ros4hri/speech/text".into(),
         }];
+        // The two shapes a viseme stream comes in reach the same key: the
+        // code alone, or the first of a sequence.
+        let viseme_key = "standard/ros4hri/viseme";
+        let viseme_routes = vec![FieldRoute {
+            field: "value".into(),
+            key: viseme_key.into(),
+        }];
+        let viseme_sequence_routes = vec![FieldRoute {
+            field: "visemes.0.value".into(),
+            key: viseme_key.into(),
+        }];
         // Every endpoint takes its flow's default delivery. A command surface
-        // is reliable: an expression or a line of speech that is dropped is an
-        // instruction the face never carries out. The image is sensor data: a
-        // frame is state, and a slow reader must not stall the renderer.
+        // is reliable: an expression that is dropped is an instruction the
+        // face never carries out. The image and the speech text are sensor
+        // data: a frame or an utterance is state, and a slow reader must not
+        // stall the renderer.
         let endpoint = |topic: &str, ros_type: &str, flow: Flow, routes: &[FieldRoute]| Endpoint {
             topic: topic.into(),
             ros_type: ros_type.into(),
@@ -205,15 +233,22 @@ impl ExposureProfile {
                     &look_at_routes,
                 ),
                 endpoint(
-                    "/robot_face/tts",
-                    "std_msgs/String",
+                    "/expressive_face/look_at",
+                    "geometry_msgs/PointStamped",
                     Flow::In,
-                    &speech_routes,
+                    &look_at_routes,
+                ),
+                endpoint("/tts/viseme", "hri_msgs/Viseme", Flow::In, &viseme_routes),
+                endpoint(
+                    "/tts/visemes",
+                    "hri_msgs/Visemes",
+                    Flow::In,
+                    &viseme_sequence_routes,
                 ),
                 endpoint(
-                    "/expressive_face/speech",
+                    "/robot_face/speech",
                     "std_msgs/String",
-                    Flow::In,
+                    Flow::Out,
                     &speech_routes,
                 ),
                 endpoint(
@@ -251,8 +286,9 @@ impl ExposureProfile {
                     ],
                 },
                 // The speech skill. `person_id` and `group_id` address an
-                // audience a face device has no notion of, and the goal
-                // carries no voice, so the method's own default speaks.
+                // audience a face device has no notion of. The goal carries
+                // only the text, so the device's `say` takes its other
+                // parameters as absent (an optional voice) or supplies them.
                 ActionBinding {
                     action: "/skill/say".into(),
                     ros_type: "communication_skills/Say".into(),
@@ -385,32 +421,19 @@ mod tests {
         for expected in [
             "/skill/set_expression",
             "/robot_face/look_at",
-            "/robot_face/tts",
-            "/expressive_face/speech",
+            "/tts/viseme",
+            "/tts/visemes",
+            "/robot_face/speech",
             "/robot_face/image_raw",
             "/robot_face/image_raw/compressed",
         ] {
             assert!(topics.contains(&expected), "missing {expected}");
         }
-        let expression = profile
-            .endpoints
-            .iter()
-            .find(|e| e.topic == "/skill/set_expression")
-            .unwrap();
-
-        assert_eq!(expression.ros_type, "interaction_skills/SetExpression");
-        assert_eq!(
-            expression
-                .routes
-                .iter()
-                .map(|r| r.field.as_str())
-                .collect::<Vec<_>>(),
-            ["expression.expression", "expression.valence", "expression.arousal"]
-        );
-
-        // The commands flow in and the image flows out; nothing else does.
+        // The commands flow in; the image and the speech text flow out.
         for endpoint in &profile.endpoints {
-            let expected = if endpoint.topic.starts_with("/robot_face/image_raw") {
+            let expected = if endpoint.topic.starts_with("/robot_face/image_raw")
+                || endpoint.topic == "/robot_face/speech"
+            {
                 Flow::Out
             } else {
                 Flow::In
@@ -443,6 +466,32 @@ mod tests {
                 panic!("{topic} routes one whole key, got {:?}", endpoint.routes);
             };
             assert_eq!((route.field.as_str(), route.key.as_str()), ("", key));
+        }
+    }
+
+    /// Both viseme shapes a TTS node publishes reach the same key, so a face
+    /// lipsyncs to either without knowing which it is fed.
+    #[test]
+    fn ros4hri_preset_takes_a_viseme_in_either_shape() {
+        let profile = ExposureProfile::ros4hri();
+        for (topic, ros_type, field) in [
+            ("/tts/viseme", "hri_msgs/Viseme", "value"),
+            ("/tts/visemes", "hri_msgs/Visemes", "visemes.0.value"),
+        ] {
+            let endpoint = profile
+                .endpoints
+                .iter()
+                .find(|e| e.topic == topic)
+                .unwrap_or_else(|| panic!("{topic} is in the preset"));
+            assert_eq!(endpoint.ros_type, ros_type, "{topic}");
+            assert_eq!(endpoint.flow, Flow::In, "{topic}");
+            let [route] = endpoint.routes.as_slice() else {
+                panic!("{topic} routes one field, got {:?}", endpoint.routes);
+            };
+            assert_eq!(
+                (route.field.as_str(), route.key.as_str()),
+                (field, "standard/ros4hri/viseme"),
+            );
         }
     }
 

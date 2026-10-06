@@ -35,6 +35,13 @@
 //! runtime can depend on the *interface* without depending on `studio-bridge`.
 //! studio-bridge keeps its device-client implementations and implements this
 //! trait on them.
+//!
+//! # The client side
+//!
+//! [`Caller`] carries a call to a device, and [`client`] holds what any client
+//! of a device needs beyond single ops — calling a method by name, starting and
+//! halting a run, and the shapes a client reads keys and methods in — so a
+//! remote over a bridge and an in-process caller speak them alike.
 
 use std::pin::Pin;
 
@@ -47,6 +54,8 @@ use arora_types::data::{Key, StateChange};
 use arora_types::record::module::frozen::Function;
 use arora_types::Uuid;
 use serde::{Deserialize, Serialize};
+
+pub mod client;
 
 /// The full, self-describing signature of one callable module method — one entry
 /// of what [`BridgeOp::DescribeMethods`] returns, superseding the name-only
@@ -95,9 +104,16 @@ pub enum BridgeOp {
     Update(StateChange),
     /// Call a function.
     Call(Call),
-    /// Enumerate store keys under an optional path prefix — introspection for
-    /// the live-edit surface. Replies with a [`CallResult`] whose `ret` is an
-    /// `ArrayValue` of the matching key paths as `String`s.
+    /// Enumerate the device's keys under an optional path prefix —
+    /// introspection for the live-edit surface.
+    ///
+    /// Replies with a [`CallResult`] whose `ret` encodes
+    /// `Vec<(String, `[`KeyMeta`](arora_types::data::KeyMeta)`)>` over the value
+    /// plane (decode with `arora_types::value_serde::from_value`): each key that
+    /// holds a value or that the store has meta for, and what the store says it
+    /// is — its shape, the range it runs over, where it rests, whether anything
+    /// outside the device may write it. A key nothing has described carries the
+    /// default meta, whose only statement is the shape of the value it holds.
     ListKeys {
         /// Only keys whose path starts with this prefix; `None` lists all.
         prefix: Option<String>,

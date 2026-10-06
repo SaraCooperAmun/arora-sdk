@@ -44,8 +44,8 @@ flow:
 
 | Flow | Default | Policy |
 | --- | --- | --- |
-| out (state: rig values, the face image) | `Qos::SensorData` | best-effort, volatile, keep-last-1 |
-| in (commands: speech text, an expression) | `Qos::Reliable` | reliable, volatile, keep-last-1 |
+| out (state: rig values, the face image, the utterance) | `Qos::SensorData` | best-effort, volatile, keep-last-1 |
+| in (commands: an expression, a gaze point) | `Qos::Reliable` | reliable, volatile, keep-last-1 |
 
 State is only interesting at its newest value and a slow reader must not stall
 the writer; a command is an instruction and dropping one loses it. Override per
@@ -115,8 +115,11 @@ A method maps onto a `.srv` the way ROS already models one: the parameter list i
 the **request** (one field per parameter), the return value is the **response**.
 Both messages are synthesised as runtime types and driven through the shared CDR
 codec (`arora_msgs_ros2::cdr`) against the registry — real ROS 2 message types on
-the wire, no ad-hoc encoding. Signatures ROS 2 cannot represent are skipped and
-reported, not silently dropped.
+the wire, no ad-hoc encoding. An optional parameter or return of a scalar or a
+message travels as the bounded sequence `T[<=1]`, the ROS 2 spelling of an
+optional field: empty is absent, one element is present, and a request holding
+more is refused. Signatures ROS 2 cannot represent are skipped and reported, not
+silently dropped.
 
 ## Task runs as actions
 
@@ -125,8 +128,9 @@ enumeration, i.e. tickable, long-running, cancellable work — are mirrored as R
 2 **actions** instead. That enum is also the one return type the service plane
 cannot carry, so actions claim exactly the methods services skip; the two planes
 never overlap. A goal spawns the run (through `BridgeOp::Call` to the
-interpreter's `SPAWN`), feedback and result are typed from what the run writes,
-and cancel/status ride ros2-client's `RawActionServer`. The goal lifecycle lives
+interpreter's `SPAWN`), feedback and result are typed from what the run writes
+(an optional of a scalar as `T[<=1]`, like an optional goal parameter), and
+cancel/status ride ros2-client's `RawActionServer`. The goal lifecycle lives
 in a `GoalBook`.
 
 Introspection over the bridge (`ListKeys` / `ListMethods`) and `BridgeOp::Call`
@@ -144,6 +148,15 @@ docs](https://github.com/vizij-ai/vizij-rs/blob/main/docs/ros4hri.md)).
 Typed topics bind per endpoint: `with_typed_input`/`with_typed_output` (and
 their `_on` variants for absolute topic names) subscribe or publish a device
 key as a registered ROS message, decoded and encoded against its runtime type.
+A typed endpoint may instead **route fields to keys** by dotted name, both
+ways: inbound, each message fans out over its routed keys in one atomic
+change; outbound, the message is composed from its routed keys — each key
+lands at its field, the fields keep their last value (their type's default
+until written), and a change to any routed key publishes the whole message
+again. A `std_msgs` wrapper around one key (`data` ← the key) is the smallest
+case; a `PointStamped` from a vec3 key and a frame key is the same mechanism.
+Inbound, a numeric segment indexes a sequence (`visemes.0.value`), so a
+message wrapping its payload in an array routes like any other.
 
 **Exposure profiles** (`profile` module) bundle a whole surface: an
 [`ExposureProfile`] holds typed endpoints on absolute topics with per-field
@@ -154,12 +167,19 @@ standard ROS 2 action — the skill plane. `ExposureProfile::ros4hri()` ships
 the ROS4HRI face surface for both incumbent name sets — PAL (`/robot_face/*`)
 and IIIA (`/expressive_face/*`): expression commands fan out to
 `standard/ros4hri/expression/*`, `look_at` points land as the gaze target
-(vec3) and frame, speech text feeds the lipsync key, and the two standard
-skills spawn the device's task runs — `interaction_skills/LookAt` on
-`/skill/look_at`, and `communication_skills/Say` on `/skill/say`, whose goal
-`input` is the utterance and whose feedback carries what the run reports (for
-a face, the viseme at the audio playhead). The rendered face publishes on the
-`image_transport` pair PAL OS documents — `display/face` as a
+(vec3) and frame, a streamed viseme lands as its ROS4HRI code on
+`standard/ros4hri/viseme` — from either shape a TTS node publishes it in, one
+`hri_msgs/Viseme` on `/tts/viseme` or an `hri_msgs/Visemes` on `/tts/visemes`,
+both carrying the shape at the audio playhead — and the two standard skills
+spawn the device's task runs —
+`interaction_skills/LookAt` on `/skill/look_at`, and `communication_skills/Say`
+on `/skill/say`, whose goal `input` is the utterance and whose feedback carries
+what the run reports (for a face, the viseme at the audio playhead). What the
+face is saying publishes as a `std_msgs/String` on `/robot_face/speech` from
+the speech state key `standard/ros4hri/speech/text` — the utterance while a
+say run speaks, empty at rest — for subtitles and transcripts; text is not
+commanded through a topic, speaking is the action. The rendered face publishes
+on the `image_transport` pair PAL OS documents — `display/face` as a
 `sensor_msgs/Image` on `/robot_face/image_raw`, `display/face/compressed` as a
 `sensor_msgs/CompressedImage` on `/robot_face/image_raw/compressed`; a face
 writes the key of the transport it encodes. Enabling it is one call:
@@ -172,9 +192,13 @@ let config = Ros2BridgeConfig::new("robot", 0)
 An action binding is the exterior contract of a skill: at startup the bridge
 checks it against the device's described methods (the function exists, is a
 task run, and every goal field routes onto a parameter of a compatible type)
-and refuses it loudly otherwise. A parameter the goal does not name is left to
-the method's own default and logged — a standard contract carries what the
-standard says, not every parameter an implementation happens to take. A bound action serves one goal at a time —
+and refuses it loudly otherwise. A parameter the goal does not name is left out
+of the spawn call, and the bridge logs it — a standard contract carries what
+the standard says, not every parameter an implementation happens to take. What
+the absent argument means is the implementation's: a method declared with
+arora-module reads an absent optional parameter as `None` and fails the call on
+an absent required one, while a task fragment may supply the argument itself.
+A bound action serves one goal at a time —
 `std_skills/Meta.priority` arbitrates, an equal-or-higher replacement
 preempting the active run (its result reports `ROS_EINTR`) and a lower one
 being rejected — and answers with the standard Result message carrying the

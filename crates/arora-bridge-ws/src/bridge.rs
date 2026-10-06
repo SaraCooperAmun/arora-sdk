@@ -13,20 +13,31 @@
 //! stream the runtime polls — no intermediate buffer, no lock. [`try_send`]
 //! pushes to the connected clients synchronously. The value vocabulary is
 //! `arora_types::Value`, so the translation is structural, not a conversion.
+//!
+//! What a client discovers travels the same channel: [`DevicePlane`] lists the
+//! device's keys and describes its methods on demand, and calls a method by
+//! name, so a client reaches the device itself without anything being
+//! registered on the server ahead of time — including what a module loaded
+//! mid-run brought with it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arora_bridge::client::{self, KeyInfo, MethodInfo};
 use arora_bridge::{
     Bridge, BridgeCommand, BridgeOp, BridgeResult, DeviceInfo, Inbound, InboundStream,
+    MethodSignature,
 };
-use arora_types::data::{Key, StateChange};
+use arora_types::data::{Key, KeyMeta, StateChange};
 use arora_types::value::Value;
+use arora_types::Uuid;
 use async_trait::async_trait;
 use futures::channel::{mpsc, oneshot};
 use futures::StreamExt;
 
+use crate::handlers::Device;
 use crate::messages::Outgoing;
+use crate::method::InvokeResult;
 use crate::server::AroraWSServer;
 
 /// The WebSocket server as an Arora [`Bridge`].
@@ -47,19 +58,27 @@ impl WsBridge {
     pub async fn new(server: Arc<AroraWSServer>) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::unbounded::<BridgeCommand>();
 
-        // WriteValues -> Update. The handler is synchronous, so enqueue the
-        // command and acknowledge; the runtime applies it on its next step.
+        // WriteValues -> Update, awaiting the runtime's answer: a key the device
+        // writes itself is refused, and the client is told so rather than
+        // acknowledged.
         let tx = cmd_tx.clone();
         server
-            .set_write_values_handler(move |values: HashMap<String, Value>| {
-                let mut change = StateChange::new();
-                for (path, value) in values {
-                    change.set.insert(Key::from(path), Some(value));
-                }
-                let (reply_tx, _reply_rx) = oneshot::channel();
-                tx.unbounded_send(BridgeCommand::new(BridgeOp::Update(change), reply_tx))
-                    .map_err(|_| "bridge command channel closed".to_string())
-            })
+            .set_write_values_handler(Arc::new(move |values: HashMap<String, Value>| {
+                let tx = tx.clone();
+                Box::pin(async move {
+                    let mut change = StateChange::new();
+                    for (path, value) in values {
+                        change.set.insert(Key::from(path), Some(value));
+                    }
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    tx.unbounded_send(BridgeCommand::new(BridgeOp::Update(change), reply_tx))
+                        .map_err(|_| "the device is gone".to_string())?;
+                    match reply_rx.await {
+                        Ok(result) => result.map(|_| ()),
+                        Err(_) => Err("the device dropped the write".to_string()),
+                    }
+                }) as _
+            }))
             .await;
 
         // ReadValues -> Get, awaiting the runtime's reply.
@@ -84,9 +103,128 @@ impl WsBridge {
             }))
             .await;
 
+        // The device plane: what `list_keys` reaches, and what `list_methods` and
+        // `invoke` reach for every name the server's own registry does not own.
+        // It holds a sender, not the bridge, so it lives on the server while the
+        // device owns the bridge.
+        server
+            .set_device(Arc::new(DevicePlane {
+                commands: cmd_tx.clone(),
+            }))
+            .await;
+
         Self {
             server,
             commands: Some(cmd_rx),
+        }
+    }
+}
+
+/// The device over the runtime's inbound commands: it lists the keys the device
+/// holds and describes its methods on demand — so what a module loaded mid-run
+/// brought is there at once — and turns an `invoke` into the call the
+/// described signature defines.
+struct DevicePlane {
+    commands: mpsc::UnboundedSender<BridgeCommand>,
+}
+
+impl DevicePlane {
+    /// Put `op` to the runtime and await its answer.
+    async fn ask(&self, op: BridgeOp) -> Result<Value, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.commands
+            .unbounded_send(BridgeCommand::new(op, reply_tx))
+            .map_err(|_| "the device is gone".to_string())?;
+        match reply_rx.await {
+            Ok(result) => result.map(|result| result.ret),
+            Err(_) => Err("the device dropped the request".to_string()),
+        }
+    }
+
+    /// The device's methods with their full signatures. Empty when the device
+    /// cannot answer — it stopped, or it never described any.
+    async fn signatures(&self) -> Vec<MethodSignature> {
+        match self.ask(BridgeOp::DescribeMethods { prefix: None }).await {
+            Ok(ret) => arora_types::value_serde::from_value(ret).unwrap_or_else(|e| {
+                log::warn!("the device's method signatures did not decode: {e}");
+                Vec::new()
+            }),
+            Err(e) => {
+                log::warn!("the device did not describe its methods: {e}");
+                Vec::new()
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Device for DevicePlane {
+    /// The keys the device holds, each with what its store says the key is.
+    async fn keys(&self) -> Vec<KeyInfo> {
+        let listed = match self.ask(BridgeOp::ListKeys { prefix: None }).await {
+            Ok(listed) => listed,
+            Err(e) => {
+                log::warn!("the device did not list its keys: {e}");
+                return Vec::new();
+            }
+        };
+        let keys: Vec<(String, KeyMeta)> = match arora_types::value_serde::from_value(listed) {
+            Ok(keys) => keys,
+            Err(e) => {
+                log::warn!("the device's keys did not decode: {e}");
+                return Vec::new();
+            }
+        };
+        keys.into_iter()
+            .map(|(path, meta)| KeyInfo { path, meta })
+            .collect()
+    }
+
+    async fn methods(&self) -> Vec<MethodInfo> {
+        self.signatures()
+            .await
+            .iter()
+            .map(client::method_info)
+            .collect()
+    }
+
+    async fn invoke(&self, method: &str, args: HashMap<String, Value>) -> InvokeResult {
+        let signatures = self.signatures().await;
+        // The wire names a method by its bare name, so a name several modules
+        // export fails, naming them, rather than reaching one of them.
+        let signature = match client::find_method(&signatures, method, None) {
+            Ok(signature) => signature,
+            Err(message) => return InvokeResult::err(message),
+        };
+        let call = match client::call_of(signature, args) {
+            Ok(call) => call,
+            Err(message) => return InvokeResult::err(message),
+        };
+        // A task-shaped method starts a run: the spawn answers at once with the
+        // run's handle, and the run reports on the handle's status key. Anything
+        // else answers with its return value.
+        let task = client::task_shaped(&signature.function);
+        let call = if task { client::spawn(&call) } else { call };
+        match self.ask(BridgeOp::Call(call)).await {
+            Ok(Value::Unit) => InvokeResult::ok(),
+            Ok(value) if task => match client::run_of(&value) {
+                Ok(run) => InvokeResult::ok_with_value(run.to_value()),
+                // The run did start: answer with the handle as it came rather
+                // than telling the client it failed.
+                Err(e) => {
+                    log::warn!("{method} started a run whose handle did not decode: {e}");
+                    InvokeResult::ok_with_value(value)
+                }
+            },
+            Ok(value) => InvokeResult::ok_with_value(value),
+            Err(message) => InvokeResult::err(message),
+        }
+    }
+
+    async fn halt(&self, run: Uuid) -> InvokeResult {
+        match self.ask(BridgeOp::Call(client::halt(run))).await {
+            Ok(_) => InvokeResult::ok(),
+            Err(message) => InvokeResult::err(message),
         }
     }
 }

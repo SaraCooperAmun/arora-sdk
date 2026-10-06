@@ -4,6 +4,219 @@ All notable changes to `arora`. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [11.6.0] - 2026-10-05
+
+### Added
+
+- `LocalCaller` has every operation a remote client has over a bridge, beside
+  `call`: `list_keys` and `describe_methods` (introspection), `invoke` (call a
+  method by name with arguments by parameter name; a task-shaped method is
+  spawned and answers with its run's handle, `Invoked::Started`; an optional
+  module id chooses among modules exporting one name, which otherwise fails
+  naming them), `spawn` (start a call as a concurrent task run) and `halt`.
+  Each sends the `BridgeOp` a remote sends, queued before the method returns
+  and applied at the next step, in order with every other inbound op; `invoke`
+  reads the signature on one step and applies its call on the next.
+- Re-exports `TaskHandle`, `TaskId` and `MethodSignature`, which those
+  operations answer with and take.
+
+### Changed
+
+- Depends on arora-bridge 6.1.
+
+## [11.5.0] - 2026-10-05
+
+### Changed
+
+- **A device reaches a bridge that authenticates it.** The `studio-bridge`
+  feature depends on `arora-studio-bridge-client` 9.1 and connects with the
+  device's Studio credentials: over a TLS endpoint (`STUDIO_BRIDGE_ENDPOINT=tls/…`)
+  the client obtains from Studio a certificate whose Common Name is the
+  device's principal, keeps it with its key in the device directory's `studio/`
+  subdirectory, and renews it while it runs. Over `tcp/` nothing changes.
+
+## [11.4.0] - 2026-10-03
+
+### Changed
+
+- A device answers `ListKeys` and `DescribeMethods` over the Studio bridge: the
+  `studio-bridge` feature depends on `arora-studio-bridge-client` 9 (studio-bridge
+  msgs 6, whose `AroraOp` carries both), so a Studio's `listKeys` and
+  `describeMethods` reach the device's `BridgeOp::ListKeys` and
+  `BridgeOp::DescribeMethods` as every other bridge's do.
+
+## [11.3.0] - 2026-10-02
+
+### Added
+
+- **The device loads the modules in its directory.** Every module directory
+  under `<device directory>/modules/` is loaded at start, in name order, and
+  `--module <DIR>` (repeatable) adds one from elsewhere. A module directory is
+  `header.json` — the module's low-level `Header`, as JSON — beside the one
+  file with the extension the header's executor names: `.wasm` for `wasm`,
+  the platform's dynamic library (`.so`, `.dylib`, `.dll`) for `native`. The
+  artifact's name is free, so a published artifact directory (the
+  `@vizij/animation-module` package's `artifact/`) is a module directory as
+  is. Entries whose name starts with `.` (OS metadata such as `.DS_Store` or
+  an AppleDouble `._x.wasm`) are neither module directories nor artifacts. A
+  module the device cannot load — a missing or malformed header, no artifact
+  or several, an executor it does not run, one module in two directories, an
+  artifact the engine rejects — fails the start, naming the module. A loaded
+  module's functions are reachable by any call and `DescribeMethods` lists
+  their primitive-only signatures. `module_dir::read` and
+  `module_dir::in_device_dir` read module directories for an embedder;
+  `DeviceCli::modules` reads what the command line names, for `with_module`.
+- `device_dir::from_env()`: the device directory of a run configured from the
+  environment — `DEVICE_DIR`, else `<IDENTITY_FILE>_dir` while that deprecated
+  variable is set (with a deprecation warning), else the per-user directory of
+  the device `DEVICE_LOCAL_ID` names. `device_dir` is part of every native
+  build, no longer of the `studio-bridge` feature alone.
+- `standard_frontend()`: the front end `run` picks when none is injected, for
+  a binary that logs before `run` — the `arora` binary installs it before it
+  reads its module directories, so what the loading says is captured.
+
+### Changed
+
+- Two guest modules with one id fail the build, naming both; the engine would
+  load the first and the method index describe the last.
+- A guest module the engine cannot load fails the build naming the module (its
+  header's name and id) along with the engine's reason, and each guest module
+  loaded is logged with its name and id.
+
+## [11.2.0] - 2026-10-02
+
+### Added
+
+- A `ListKeys` answer carries a key's unit (`KeyMeta::unit`, arora-types 3.2)
+  with the rest of its meta, so every bridge relays it as it relays the range.
+
+### Changed
+
+- Depends on arora-types 3.2.
+
+## [11.1.0] - 2026-10-02
+
+### Added
+
+- **The device directory**: what a device keeps of its own from one run to the
+  next, each use in a subdirectory of its own. It is
+  `<data_local_dir>/semio/arora/devices/<local id>` (`~/Library/Application
+  Support` on macOS, `~/.local/share` on Linux, `%LOCALAPPDATA%` on Windows),
+  the local id coming from `DEVICE_LOCAL_ID`, `default` when unset; two devices
+  on one host set different ids. `DEVICE_DIR` replaces the whole path, and so
+  does `studio::connect_with_device_dir(&Path)` for an embedder whose platform
+  gives it a data directory (Android, a Tauri app). `device_dir::of(local_id)`
+  gives a local id's per-user directory. The README shows the tree.
+
+### Changed
+
+- **The Studio credentials live in the device directory's `studio/`**, kept by
+  arora-studio-bridge-client 8.1's `DeviceCredentials`, which alone writes
+  inside it. Rebuilding, reinstalling or moving the binary no longer registers
+  the device anew. Credentials from arora 11.0 and earlier (`.semio/arora`
+  under the executable's directory, the home directory or the current
+  directory) move into `devices/default/studio/` at the first start, so the
+  device keeps its Studio identity.
+- No file is written to probe a directory's writability; the directories and
+  files are readable by the current user alone on Unix.
+- A saved refresh token that cannot be read says why when the device signs in
+  anew.
+- Depends on arora-studio-bridge-client 8.1, and no longer on
+  `crypto_secretbox`.
+
+### Deprecated
+
+- `IDENTITY_FILE`. The device directory of a run that sets it is
+  `<IDENTITY_FILE>_dir`: the file is copied there with the key it decrypts
+  under, and is neither updated nor removed afterwards. Each run warns of the
+  deprecation and that the file can be removed; a run with the file absent
+  falls back to the directory. With neither the file nor the directory
+  present, the run fails.
+
+## [11.0.1] - 2026-09-29
+
+### Fixed
+
+- The `studio-bridge` feature builds: it depends on arora-studio-bridge-client 8,
+  which implements the arora-bridge 6 `Bridge` the rest of arora speaks.
+
+## [11.0.0] - 2026-09-29
+
+### Added
+
+- `arora --open`: every key is an input, for a sandbox or a bench. Without it the
+  binary's device accepts no remote writes until something opens a key.
+- `serve_local_ws_bridge(Arc<AroraWSServer>)`: serve a server you built — bound,
+  spawned, and cancelled when the returned bridge is dropped, exactly as
+  `local_ws_bridge` does it. The caller keeps the server, so it can reach it at
+  any point in the run. `local_ws_bridge_with` is one line of it.
+
+### Changed
+
+- **Breaking:** `BridgeOp::ListKeys` answers with each key's
+  `KeyMeta` — the store's meta, with the shape of the value it holds filled in
+  where the store says nothing, and every key the store describes even if nothing
+  has written it yet. A bridge relays that instead of keeping its own account of
+  the device's keys.
+- **Breaking:** a `BridgeOp::Update` reaches only the keys the device opened
+  (`KeyMeta::editable`); any other is refused, naming the key. This is every
+  bridge's inbound write — ws, ROS 2, Studio — checked once on the way in, so a
+  device that opens nothing accepts no remote writes. The device's own writers
+  (HAL, modules, behavior) are never checked.
+- **Breaking:** depends on arora-types 3.1, arora-bridge 6 and arora-bridge-ws 7,
+  the last of which this crate re-exports as `arora::bridge_ws`.
+
+## [10.3.0] - 2026-09-28
+
+### Added
+
+- The methods the behavior interpreter describes (arora-behavior 9.1's
+  `described_methods`) join the method index under the interpreter module,
+  so a remote discovers and spawns them like any task run. A direct call to
+  one fails, saying to spawn it. A function id described both by a module
+  and by the interpreter fails the build.
+
+## [10.2.0] - 2026-09-28
+
+### Added
+
+- The re-exported `HostModule` has `from_exports`: depends on arora-engine
+  5.1.
+
+## [10.1.0] - 2026-09-28
+
+### Added
+
+- `local_ws_bridge_with(ServerConfig)`: the open local bridge on another port, on
+  a LAN-facing address, or serving the control panel — everything else is
+  `local_ws_bridge`, so an app that needs one of those no longer rebuilds the
+  bind, the serving task and its cancellation.
+- `arora::bridge_ws`: the open local bridge's crate re-exported, so an embedder
+  names `ServerConfig` through the arora it serves.
+
+### Changed
+
+- Depends on arora-bridge-ws 6, where a client reaches the device's own methods
+  and subscribes to the keys it wants.
+
+## [10.0.1] - 2026-09-26
+
+### Fixed
+
+- The `studio-bridge` feature builds: it depends on arora-studio-bridge-client
+  7, which implements the arora-bridge 5 `Bridge` trait.
+
+## [10.0.0] - 2026-09-25
+
+### Changed
+
+- **Breaking:** depends on arora-types 3, arora-engine 5, arora-behavior 9,
+  arora-behavior-tree 8, arora-bridge 5, arora-bridge-ws 5, arora-hal 4 and
+  arora-simple-data-store 3.
+- The `studio-bridge` feature does not build until arora-studio-bridge-client
+  is released against arora-bridge 5: the client implements
+  `arora_bridge::Bridge`.
+
 ## [9.11.0] - 2026-07-30
 
 ### Added

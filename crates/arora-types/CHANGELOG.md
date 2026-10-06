@@ -4,6 +4,104 @@ All notable changes to `arora-types`. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [3.3.0] - 2026-10-02
+
+### Added
+
+- `Subscription::map`: a subscription read through a translation of its
+  changes — how a view of a store, such as one namespace of it, derives its
+  feed from the store's own, with no thread relaying the feed and no store
+  knowing the view. The opening state is delivered whatever the translation
+  leaves of it, even nothing: it is the view's own opening state. A later
+  change the translation leaves empty is not delivered, as a write outside the
+  view changes nothing the view holds.
+
+## [3.2.0] - 2026-10-02
+
+### Added
+
+- `KeyMeta::unit`, set with `KeyMeta::in_unit`: what a numeric key's values are
+  counted in — radians, metres, a fraction — named freely for whoever displays
+  or converts them. A name, not an algebra: Arora relays it as written and
+  computes nothing from it. On the wire it is `unit`, present only when set, so
+  a reader tells "no unit" from the field's absence rather than from a null.
+
+## [3.1.1] - 2026-10-02
+
+### Fixed
+
+- The walk's optional hooks no longer name ROS 2 CDR as a format with no
+  optional form: arora-msgs-ros2 2.1 writes an optional as a bounded sequence
+  `T[<=1]`.
+
+## [3.1.0] - 2026-09-29
+
+### Added
+
+- **`KeyMeta`, and the store seams that carry it**: what a key is beyond the
+  value it holds — the shape, the range it runs over, where it rests, what it is
+  for, and whether a remote writer may set it. `DataStore::meta`, `all_meta`,
+  `set_meta` and `set_prefix_meta` read and set it, each with a default
+  implementation (no meta, and a refusal to keep any), so a store opts in when
+  it has something to say and none is forced. It is the store's because it is a
+  property of the key: every bridge relays the same answer instead of each
+  keeping its own.
+- **A key is closed to remote writers unless its meta opens it**
+  (`KeyMeta::editable`, false by default): a network peer does not get to set a
+  key the device never offered. A device opens a key, or a whole subtree with
+  `set_prefix_meta` — the empty prefix opening everything, for a sandbox. `meta`
+  resolves to the most specific statement, the key's own replacing its
+  subtree's whole; `prefix_covers` is what a prefix covers, on segment
+  boundaries.
+- `Value::kind()`: the value's `Type` — which variant it is. What a consumer
+  needs to render a value or to check that another fits the same slot, and what
+  types a key off the value it holds; `type_uuid()` stays the compound record's
+  own id.
+
+## [3.0.0] - 2026-09-25
+
+### Added
+
+- `FrozenTy::FrozenOption` and `UnfrozenTy::UnfrozenOption`: the record
+  vocabulary's optional type, an absent value or a present one of type
+  `element`. Freezing, dependency collection and serde carry it.
+- `FrozenTy::is_option` and `FrozenTy::as_option`.
+- `module::high::TypeRef::Option`: a hand-written `module.yaml` declares an
+  optional as `{ kind: option, id: … }`.
+- The typed wire walk reads and writes `TypeRef::Option`: a presence flag,
+  then the element when present. A bare element is written as a present
+  value.
+
+### Changed
+
+- **Breaking:** `FrozenTy` and `UnfrozenTy` have a new variant, so an
+  exhaustive `match` on either must handle it.
+- **Breaking:** `ValueWriter::begin_option` and `ValueReader::enter_option`
+  are required methods. A format with no optional form returns an error.
+
+## [2.6.0] - 2026-09-22
+
+### Added
+
+- `module::declared`: the `AroraModule` trait (`id`, `header(executor)`,
+  `record(parent)`, `exports`) and `AroraFunction` — one exported function,
+  callable — what a module declared in Rust implements, the twin of
+  `AroraType` for modules. The executor is the exporter's to name, so
+  `header` takes it; a module linked into the host has no header and is
+  described by its `record`.
+- `AroraType::arora_type_version()`: the record version a frozen form pins a
+  type at, `1.0.0` unless `#[arora(version = "…")]` says otherwise.
+- `Value::array_of`, `Value::array_of_type` and `Value::into_elements`: pack
+  elements of one type into the array form the value plane uses for it, and
+  unpack any array form.
+- `From<Key> for Value` / `TryFrom<Value> for Key`.
+
+### Changed
+
+- `#[derive(AroraType)]` (arora-types-derive 1.3) also emits `From<T> for
+  Value` and `TryFrom<Value> for T`. A type that wrote those impls by hand
+  must drop them (the compiler reports the conflict, E0119).
+
 ## [2.5.1] - 2026-08-31
 
 ### Fixed

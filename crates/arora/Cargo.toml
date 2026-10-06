@@ -1,6 +1,6 @@
 [package]
 name = "arora"
-version = "9.11.1"
+version = "11.6.0"
 edition = "2021"
 description = "Opinionated Arora runtime: an engine pre-wired with the native behavior-tree control nodes and the Semio backend."
 license = "MIT"
@@ -36,6 +36,10 @@ native = [
     # The helper CLI (`DeviceCli`) a device binary parses; the library itself
     # never reads argv.
     "dep:clap",
+    # The device directory (`arora::device_dir`) and the module directories a
+    # device loads from it (`arora::module_dir`, `header.json` + artifact).
+    "dep:dirs",
+    "dep:serde_json",
     "arora-engine/wasmtime-host",
     "arora-engine/native-host",
 ]
@@ -46,8 +50,6 @@ native = [
 studio-bridge = [
     "native",
     "dep:arora-studio-bridge-client",
-    "dep:crypto_secretbox",
-    "dep:dirs",
     "dep:rustls",
 ]
 # The terminal operator UI (`arora::tui`): device header, scrollable log pane,
@@ -57,20 +59,21 @@ studio-bridge = [
 tui = ["native", "dep:ratatui", "dep:sysinfo", "dep:env_filter"]
 
 [dependencies]
-arora-engine = { path = "../arora-engine", version = "4", default-features = false }
-arora-behavior-tree = { path = "../arora-behavior-tree", version = "7" }
-arora-behavior = { path = "../arora-behavior", version = "8" }
-arora-types = { path = "../arora-types", version = "2" }
-arora-bridge-ws = { path = "../arora-bridge-ws", version = "4", optional = true }
+arora-engine = { path = "../arora-engine", version = "5.1", default-features = false }
+arora-behavior-tree = { path = "../arora-behavior-tree", version = "8" }
+arora-behavior = { path = "../arora-behavior", version = "9.1" }
+arora-types = { path = "../arora-types", version = "3.2" }
+arora-bridge-ws = { path = "../arora-bridge-ws", version = "7", optional = true }
 anyhow = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 # Portable instant for the run loop's dt/Hz measurements: `performance.now()`
 # on wasm32-unknown-unknown, a zero-cost re-export of `std::time` elsewhere.
 web-time = "1"
 # The three interfaces the runtime loop wires around the shared state.
-arora-hal = { path = "../arora-hal", version = "3" }
-arora-bridge = { path = "../arora-bridge", version = "4" }
-arora-simple-data-store = { path = "../arora-simple-data-store", version = "2" }
+arora-hal = { path = "../arora-hal", version = "4" }
+# 6.1: `client`, the by-name and run conventions `LocalCaller` speaks.
+arora-bridge = { path = "../arora-bridge", version = "6.1" }
+arora-simple-data-store = { path = "../arora-simple-data-store", version = "3" }
 futures = "0.3"
 # Only the runtime-free sync primitives here (the behavior-error watch); the
 # fat, executor-bearing tokio stays native-only below.
@@ -80,11 +83,15 @@ tokio = { version = "1", default-features = false, features = ["sync"] }
 # headless runner needs, under `firestore_support::options`). Native-only
 # (zenoh/firestore) and optional, so the wasm build of the library stays lean.
 # arora bundles it so a device-specific binary only has to provide its own HAL.
-arora-studio-bridge-client = { version = "6", optional = true }
-# Headless device-runner deps (native-only, optional). Versions track
-# studio-bridge/headless, the runner this is ported from.
-crypto_secretbox = { version = "0.1", optional = true }
+# 9 speaks studio-bridge msgs 6 (`ListKeys`, `DescribeMethods` over the Studio
+# wire) and keeps the device's Studio credentials (`credentials::DeviceCredentials`);
+# 9.1 also keeps there the certificate a TLS bridge knows the device by.
+arora-studio-bridge-client = { version = "9.1", optional = true }
+# Headless device-runner deps (native-only, optional). `dirs` finds the per-user
+# directory the device directory defaults to; `serde_json` reads a module
+# directory's `header.json`.
 dirs = { version = "6", optional = true }
+serde_json = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 env_logger = { version = "0.11", optional = true }
 log = "0.4"
@@ -119,10 +126,11 @@ tokio = { version = "1", features = ["time", "test-util"] }
 serde_yaml = "0.9"
 # The test-rust-wasm guest (built for wasm32-wasip1 as a cdylib artifact
 # dependency): its `.wasm` bytes back the `with_module` load test. Cargo exposes
-# the bytes as CARGO_CDYLIB_FILE_TEST_RUST_WASM_test_rust_wasm; its build script
-# emits the generated header the test include_str!s. Built automatically by
-# `cargo test` (the wasm32-wasip1 target is pinned in rust-toolchain.toml).
-test-rust-wasm = { path = "../../modules/test-rust-wasm", artifact = "cdylib", target = "wasm32-wasip1" }
+# the bytes as CARGO_CDYLIB_FILE_TEST_RUST_WASM_test_rust_wasm. `lib = true`
+# also brings the crate in for the test's own target: the header the engine
+# loads it with comes from the module's Rust declaration. Built automatically
+# by `cargo test` (the wasm32-wasip1 target is pinned in rust-toolchain.toml).
+test-rust-wasm = { path = "../../modules/test-rust-wasm", artifact = "cdylib", target = "wasm32-wasip1", lib = true }
 
 # The metronome tests also run in a browser, where the cadence rides a JS timer.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

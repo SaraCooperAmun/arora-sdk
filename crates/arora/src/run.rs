@@ -47,6 +47,8 @@ use futures::FutureExt;
 use log::info;
 
 #[cfg(feature = "native")]
+use crate::module_dir::ModuleFiles;
+#[cfg(feature = "native")]
 use crate::operator::{serve_access_requests, Frontend};
 #[cfg(feature = "native")]
 use crate::Arora;
@@ -59,13 +61,62 @@ use crate::Arora;
 /// [`BehaviorTreeInterpreter`](crate::BehaviorTreeInterpreter)
 /// (`load_groot`; the tree binds to the device's store at its first tick)
 /// injected via
-/// [`with_behavior_interpreter`](crate::AroraBuilder::with_behavior_interpreter)
-/// — the `arora` binary's `main` is the worked example.
+/// [`with_behavior_interpreter`](crate::AroraBuilder::with_behavior_interpreter).
+/// The modules — the device directory's and `--module`'s — come out of
+/// [`modules`](Self::modules), each for
+/// [`with_module`](crate::AroraBuilder::with_module). The `arora` binary's
+/// `main` is the worked example.
 #[cfg(feature = "native")]
 #[derive(Debug, Default, clap::Parser)]
+#[command(
+    about = "The Arora device runner",
+    long_about = "The Arora device runner: a headless device over the fake HAL, serving the \
+                  open local bridge (or Semio Studio in a studio-bridge build).\n\n\
+                  At start it loads every module directory under its device directory's \
+                  modules/ — the device directory is DEVICE_DIR; else <IDENTITY_FILE>_dir \
+                  while that deprecated variable is set; else the per-user directory of the \
+                  device DEVICE_LOCAL_ID names (`default` when unset) — then each --module \
+                  directory. A module directory holds header.json (the module's header) \
+                  beside its artifact, the one file with the extension the header's executor \
+                  names: .wasm for wasm, the platform's dynamic library for native. Entries \
+                  whose name starts with `.` (OS metadata) are ignored. A module that cannot \
+                  be loaded fails the start, naming it."
+)]
 pub struct DeviceCli {
     /// Groot behavior-tree file to install as the device's behavior.
     pub groot: Option<std::path::PathBuf>,
+
+    /// Let any bridge write any key. A key is closed to remote writers unless
+    /// the device opens it, so a plain device accepts no writes; this opens them
+    /// all, for a sandbox or a bench — never a device on a network others share.
+    #[arg(long)]
+    pub open: bool,
+
+    /// A module directory to load besides the device directory's: header.json
+    /// beside the one .wasm (executor wasm) or dynamic library (executor
+    /// native). Repeatable.
+    #[arg(long, value_name = "DIR")]
+    pub module: Vec<std::path::PathBuf>,
+}
+
+#[cfg(feature = "native")]
+impl DeviceCli {
+    /// The modules this command line loads, read: every module directory under
+    /// the device directory's `modules/` ([`device_dir::from_env`]), then each
+    /// `--module` directory, in that order. A directory that cannot be read as
+    /// a module, or one module in two directories, is an error naming the
+    /// module: a device never starts without a module it was given.
+    ///
+    /// [`device_dir::from_env`]: crate::device_dir::from_env
+    pub fn modules(&self) -> Result<Vec<ModuleFiles>> {
+        let device_dir = crate::device_dir::from_env()?;
+        let mut modules = crate::module_dir::in_device_dir(&device_dir)?;
+        for dir in &self.module {
+            modules.push(crate::module_dir::read(dir)?);
+        }
+        crate::module_dir::distinct(&modules)?;
+        Ok(modules)
+    }
 }
 
 /// Run the default device: in-process fake HAL, default bridge.
@@ -106,9 +157,43 @@ pub async fn run_with_hal(hal: Box<dyn Hal>) -> Result<()> {
 /// port frees for the next device in the same process.
 #[cfg(feature = "native")]
 pub async fn local_ws_bridge() -> Result<Box<dyn Bridge>> {
-    let server = Arc::new(arora_bridge_ws::AroraWSServer::new(
-        arora_bridge_ws::ServerConfig::default(),
-    ));
+    local_ws_bridge_with(arora_bridge_ws::ServerConfig::default()).await
+}
+
+/// The open local bridge on a server configuration of your own — another port
+/// for a second device on the same machine, an interface address for a phone or
+/// tablet on the LAN (an explicit choice: the link is unauthenticated), the
+/// control panel served on the same port.
+///
+/// Everything else is [`local_ws_bridge`]. To keep the server — to reach it at any
+/// point in the run — build it yourself and hand it to
+/// [`serve_local_ws_bridge`].
+#[cfg(feature = "native")]
+pub async fn local_ws_bridge_with(
+    config: arora_bridge_ws::ServerConfig,
+) -> Result<Box<dyn Bridge>> {
+    serve_local_ws_bridge(Arc::new(arora_bridge_ws::AroraWSServer::new(config))).await
+}
+
+/// Serve a WebSocket server you built: bind it, spawn its serving task, and
+/// attach its lifetime to the returned bridge, which cancels the task when
+/// dropped.
+///
+/// The caller keeps the [`AroraWSServer`](arora_bridge_ws::AroraWSServer) — to
+/// disconnect a client, to read its address, to serve it again elsewhere. What
+/// the device *has* needs nothing from it: the bridge lists the device's keys
+/// with the meta its store keeps and describes its functions on demand, so a
+/// module loaded mid-run is discoverable at once.
+///
+/// What a key is — its range, where it rests, whether a client may write it —
+/// the device says to its **store** (`DataStore::set_meta`), and every bridge
+/// relays the same answer.
+#[cfg(feature = "native")]
+pub async fn serve_local_ws_bridge(
+    server: Arc<arora_bridge_ws::AroraWSServer>,
+) -> Result<Box<dyn Bridge>> {
+    let port = server.port();
+    let bind_address = server.bind_address().to_string();
     let bridge = arora_bridge_ws::bridge::WsBridge::new(server.clone()).await;
     // Bind before spawning: an unusable address (port already taken) fails the
     // run here instead of leaving a device serving a bridge nobody can reach.
@@ -125,7 +210,7 @@ pub async fn local_ws_bridge() -> Result<Box<dyn Bridge>> {
             }
         }
     });
-    info!("serving the local bridge on ws://127.0.0.1:9000");
+    info!("serving the local bridge on ws://{bind_address}:{port}");
     Ok(Box::new(LocalBridge {
         inner: bridge,
         server: cancel,
@@ -283,13 +368,18 @@ pub(crate) async fn run_builder_with_frontend(
     }
 }
 
-/// Pick the front end for this process: the terminal operator UI when the `tui`
-/// feature is on and stdout is a terminal, otherwise the headless front end.
+/// The standard front end for this process: the terminal operator UI when the
+/// `tui` feature is on and stdout is a terminal, otherwise the headless front
+/// end — what [`run`](crate::AroraBuilder::run) picks when none is injected.
 ///
-/// Building the front end installs the matching log sink, so the run path calls
-/// this before it emits any logs it wants captured.
+/// Building the front end installs the matching log sink, so a binary that
+/// logs before `run` — the `arora` binary logs the module directories it
+/// reads — takes it first and injects it with
+/// [`with_frontend`](crate::AroraBuilder::with_frontend). One per process:
+/// the terminal UI takes the terminal over, and a second headless front end
+/// leaves the first logger in place.
 #[cfg(feature = "native")]
-pub(crate) fn select_frontend() -> Frontend {
+pub fn standard_frontend() -> Frontend {
     #[cfg(feature = "tui")]
     {
         use std::io::IsTerminal;
